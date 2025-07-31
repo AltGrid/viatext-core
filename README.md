@@ -2,7 +2,7 @@
 
 *The brain of the machine. The switchboard in the dark.*
 
-![VIATEXT Logo](../viatext.png)
+![VIATEXT Logo](viatext.png)
 
 **`viatext-core`** is the shared logic layer behind all ViaText nodes — whether embedded in a microcontroller, running inside a Linux daemon, or quietly routing packets between virtual agents in a multi-process system.
 
