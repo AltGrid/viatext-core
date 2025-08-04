@@ -1,6 +1,13 @@
 # Compiler and flags
 CXX = g++
-CXXFLAGS = -std=c++17 -Iinclude -Ithird_party/CLI -Wall -Wextra
+CXXFLAGS = -std=c++17 \
+    -Iinclude \
+    -Ithird_party/CLI \
+    -Ithird_party/nlohmann \
+    -Ithird_party/ArduinoJson \
+    -Ithird_party/ArduinoJson \
+    -Wall \
+    -Wextra
 
 # Source/object files for core (add files here as you expand)
 CORE_SRCS = src/core.cpp src/message.cpp src/parser.cpp src/routing.cpp
