@@ -12,6 +12,7 @@ static std::string xor_cipher(const std::string& data, const std::string& key) {
     return out;
 }
 
+
 std::optional<Message> Message::from_string(const std::string& raw) {
     // Simple parse: stamp|from|to|ttl|encrypted|payload
     std::istringstream iss(raw);
