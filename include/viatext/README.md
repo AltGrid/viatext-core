@@ -89,7 +89,37 @@ Arbitrary data can be sent within messages. If the Core doesn't recognize a spec
 
 ### Parser Class
 
-Handles ALL parsing. It is meant to be a very standard, very simple command parser so that compatibility with other systems (ESP32 LoRa, Linux, Etc) is not compromised. 
+The **Parser class** handles all message and command parsing within the ViaText Core. Its purpose is to offer a **minimal, portable interface** for interpreting commands and message arguments across all node types.
+
+> **Why not use CLI11, getopt, or standard argument parsers?**  
+> Because **ViaText Core must compile cleanly on microcontrollers** like ESP32 and ATmega, without STL-heavy or heap-allocating dependencies. A complex parser would break cross-platform compatibility and violate our core principles: simplicity, portability, and autonomy.
+
+---
+
+#### Command Format Rule
+
+All arguments must follow a strict **`-key [value]`** structure:
+
+- A **key** is always prefixed by a single dash (`-`)
+- A **value** is optional
+- Keys with **no value** are treated as **flags**
+- Order matters: keys must precede their value
+
+---
+
+#### Design Rationale
+
+This command structure ensures:
+
+- **Maximum compatibility** across all platforms (Linux, ESP32, Arduino, etc.)
+- **Human readability** for CLI and serial-based interaction
+- **Deterministic parsing**, minimizing bugs from ambiguous or complex formats
+- **No external dependencies**, enabling full offline operation and microcontroller use
+
+---
+
+This format forms the foundation for all internal command and message control inside the ViaText ecosystem — whether used in serial interfaces, LoRa payloads, or stdin-like Linux daemons.
+
 
 ### Message Class
 
