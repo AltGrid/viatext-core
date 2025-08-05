@@ -43,6 +43,7 @@
  */
 
 #include "viatext/parser.hpp"
+#include "viatext/message.hpp"
 
 #ifdef ARDUINO
 
@@ -60,6 +61,8 @@ using nlohmann::json;
 
 namespace viatext {
 namespace parser {
+
+
 
 /**
  * @brief Parse a JSON (or protocol) string into a Message object.

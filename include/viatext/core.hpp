@@ -207,6 +207,8 @@ public:
      */   
     bool add_message(const std::string& msg_json);
 
+    bool add_message(const std::string& msg_json, const bool raw);
+
     /**
      * @brief Fetch the next outgoing message/event/error for the wrapper or user.
      * @return Optional string: the next pending message, or nullopt if none available.
