@@ -53,6 +53,16 @@ The Core exposes a simple, consistent API to node implementations:
 
 Implementations wrapping the Core must regularly call `tick(timestamp)` to maintain proper timing and internal state.
 
+Internal variables:
+
+- node_id (string)
+- tick_count (how many ticks have passed)
+- uptime (always in milliseconds)
+- last_timestamp (always in milliseconds)
+- inbox (list) (populated by add_message)
+- outbox (list) (populated get_message)
+- received_message_ids (list of message ids, avoid duplicates)
+
 ---
 
 ## Internal Logic
@@ -123,7 +133,7 @@ This format forms the foundation for all internal command and message control in
 
 ### Message Class
 
-Creates a message from a standard 5 part message:
+Creates a message object from a standard 5 part message string:
 
 - message_id
 - hops
@@ -132,6 +142,8 @@ Creates a message from a standard 5 part message:
 - message
 - <other relevant data>
 - <other relevant data>
+
+Setters and getters for all variables. Useful for when iterating through messages. 
 
 Uses the parser class to retrieve the ordered data. 
 
