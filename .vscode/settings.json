@@ -78,6 +78,13 @@
         "mutex": "cpp",
         "stop_token": "cpp",
         "thread": "cpp",
-        "unordered_set": "cpp"
+        "unordered_set": "cpp",
+        "cstdarg": "cpp",
+        "cwctype": "cpp",
+        "memory_resource": "cpp",
+        "random": "cpp",
+        "string_view": "cpp",
+        "numbers": "cpp",
+        "cinttypes": "cpp"
     }
 }

@@ -121,7 +121,7 @@ protected:
  *      - "-load"     : Load message from storage (calls handle_load; stub)
  *      - "-get_time" : Request current node time (calls handle_get_time; stub)
  *      - "-set_time" : Set current node/system time (calls handle_set_time; stub)
- *      - "-id"       : Set node ID (direct call to set_node_id)
+ *      - "-set_id"       : Set node ID (direct call to set_node_id)
  *
  *    Any other flags/commands are ignored or logged (can be extended).
  */

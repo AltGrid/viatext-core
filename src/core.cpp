@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include <iostream> //turn off after debugging
 
 namespace viatext {
 
@@ -31,25 +32,28 @@ void ViaTextCore::tick(uint64_t current_timestamp) {
 // ArgParser breaks the string into flags and arguments.
 // We use if/else-if to select the right handler for each supported command/flag.
 void ViaTextCore::process() {
-    if (inbox.empty()) return;
+    if (inbox.empty()) {
+        std::cout << "inbox empty";
+        return;
+    }
     std::string arg_string = inbox.front();
     inbox.pop();
 
     ArgParser parser(arg_string);
-    std::string msg_type = parser.get_message_type();
-
     // Each flag/command (e.g., "-m", "-p") is handled by its own function.
     // This pattern is easy to follow for beginners, and keeps logic modular.
-    if      (msg_type == "-m")        handle_message(parser);         // Handle a standard message
-    else if (msg_type == "-p")        handle_ping(parser);            // Handle a ping request
-    else if (msg_type == "-mr")       handle_mesh_report(parser);     // Handle mesh status request
-    else if (msg_type == "-ack")      handle_acknowledge(parser);     // Handle acknowledgments
-    else if (msg_type == "-save")     handle_save(parser);            // Save command (stubbed)
-    else if (msg_type == "-load")     handle_load(parser);            // Load command (stubbed)
-    else if (msg_type == "-get_time") handle_get_time(parser);        // Get time command (stubbed)
-    else if (msg_type == "-set_time") handle_set_time(parser);        // Set time command (stubbed)
-    else if (msg_type == "-id")       set_node_id(parser.get_arg("-id")); // Set this node's ID
+    if      (parser.has_arg("-m"))        handle_message(parser);         // Handle a standard message
+    else if (parser.has_arg("-p"))        handle_ping(parser);            // Handle a ping request
+    else if (parser.has_arg("-mr"))       handle_mesh_report(parser);     // Handle mesh status request
+    else if (parser.has_arg("-ack"))      handle_acknowledge(parser);     // Handle acknowledgments
+    else if (parser.has_arg("-save"))     handle_save(parser);            // Save command (stubbed)
+    else if (parser.has_arg("-load"))     handle_load(parser);            // Load command (stubbed)
+    else if (parser.has_arg("-get_time")) handle_get_time(parser);        // Get time command (stubbed)
+    else if (parser.has_arg("-set_time")) handle_set_time(parser);        // Set time command (stubbed)
+    else if (parser.has_arg("-set_id"))   set_node_id(parser.get_arg("-set_id")); // Set this node's ID
+    
     // Unrecognized flags are simply dropped (could log for debugging).
+    
 }
 
 // This handles a standard message (flag "-m").
@@ -72,7 +76,7 @@ void ViaTextCore::handle_message(const ArgParser& parser) {
         }
         // Always queue a delivery/logging message for the wrapper/app to handle.
         std::string delivered_args = build_received_args(message);
-        outbox.push(delivered_args);
+        outbox.push(delivered_args);        
     }
     // If it's not for us, we do nothing here; wrapper can handle forwarding if desired.
 }
@@ -101,6 +105,7 @@ void ViaTextCore::handle_acknowledge(const ArgParser& parser) {
 // This can be set at startup or at runtime when a "-id" command arrives.
 void ViaTextCore::set_node_id(const std::string& new_id) {
     node_id = new_id;
+    outbox.push("-set_id -from " + node_id); // Notify app/wrapper of ID change
 }
 
 // Returns and removes the next outbound message, if there is one. Otherwise returns an empty string.

@@ -1,19 +1,25 @@
-# Compiler and flags
+# ====== Makefile for ViaText-Core ======
+
 CXX = g++
 CXXFLAGS = -std=c++17 \
     -Iinclude \
+    -Iinclude/viatext \
     -Ithird_party/CLI \
     -Ithird_party/nlohmann \
-    -Ithird_party/ArduinoJson \
-    -Ithird_party/ArduinoJson \
     -Wall \
     -Wextra
 
-# Source/object files for core (add files here as you expand)
-CORE_SRCS = src/core.cpp src/message.cpp src/parser.cpp src/routing.cpp
+# Core source and object files
+CORE_SRCS = \
+    src/core.cpp \
+    src/message.cpp \
+    src/message_id.cpp \
+    src/arg_parser.cpp \
+    src/routing.cpp
+
 CORE_OBJS = $(CORE_SRCS:.cpp=.o)
 
-# CLI main file
+# CLI sources
 CLI_MAIN = cli/main.cpp
 CLI_OBJ = cli/main.o
 
@@ -21,14 +27,14 @@ CLI_OBJ = cli/main.o
 LIB_CORE = libviatext-core.a
 CLI_BIN = cli/viatext-cli
 
-# Default target (builds both library and CLI)
+# Default target: builds everything
 all: $(LIB_CORE) $(CLI_BIN)
 
 # Build static library from core object files
 $(LIB_CORE): $(CORE_OBJS)
 	ar rcs $@ $^
 
-# Build CLI binary (depends on main.o and the library)
+# Build CLI executable, linking with static library
 $(CLI_BIN): $(CLI_OBJ) $(LIB_CORE)
 	$(CXX) $(CXXFLAGS) -o $@ $(CLI_OBJ) $(LIB_CORE)
 
@@ -41,6 +47,6 @@ cli/main.o: cli/main.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -f src/*.o cli/*.o $(LIB_CORE) $(CLI_BIN) tests/test_*
+	rm -f src/*.o cli/*.o $(LIB_CORE) $(CLI_BIN)
 
 .PHONY: all clean

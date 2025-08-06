@@ -2,70 +2,72 @@
  * @file arg_parser.hpp
  * @brief ViaText Argument and Command String Parser
  * @details
- *    The **ArgParser** class provides a simple, portable way to break down
- *    command-line-style argument strings into named key/value pairs and flags.
+ * The **ArgParser** class provides a simple, portable way to break down
+ * command-line-style argument strings into named key/value pairs and flags.
  *
- *    **Purpose:**
- *    --------------------------
- *    In the ViaText system, messages can be sent in a variety of formats—
- *    sometimes as raw text, but often using structured argument strings like
- *    those found in Linux commands, radio firmware, or IoT protocols.
- *    The ArgParser is designed to understand these formats and make it easy to
- *    extract useful information, regardless of where the message comes from.
+ * **Purpose:**
+ * --------------------------
+ * In the ViaText system, messages can be sent in a variety of formats—
+ * sometimes as raw text, but often using structured argument strings like
+ * those found in Linux commands, radio firmware, or IoT protocols.
+ * The ArgParser is designed to understand these formats and make it easy to
+ * extract useful information, regardless of where the message comes from.
  *
- *    **How It Works:**
- *    --------------------------
- *    - Any incoming string is accepted—ArgParser only engages its parsing logic if
- *      it detects the argument pattern "-<letter> " (a dash followed by a letter and a space).
- *    - It treats tokens that start with a dash (like "-snr") as *argument keys*.
- *    - If a key is immediately followed by a value (like "-snr 4.5"), the value is stored.
- *    - If a key is *not* followed by a value (like "-m"), it is treated as a *flag*
- *      and stored with an empty string.
- *    - Values can be any text, including spaces, numbers, symbols, or special
- *      payloads (such as LoRa packet data).
+ * **How It Works:**
+ * --------------------------
+ * - Any incoming string is accepted—ArgParser only engages its parsing logic if
+ * it detects the argument pattern "-<key>" (a dash followed by a key).
+ * - It treats tokens that start with a dash (like "-snr") as *argument keys*.
+ * - If a key is immediately followed by a value (like "-snr 4.5"), the value is stored.
+ * - If a key is *not* followed by a value (like "-m"), it is treated as a *flag*
+ * and stored with an empty string.
+ * - Values can be any text, including spaces, numbers, symbols, or special
+ * payloads (such as LoRa packet data).
  *
- *    **Supported Input Examples:**
- *    --------------------------
- *      - "-m -rssi 92 -snr 4.5 -data 0x4F2B000131~shrek~donkey~Shut Up"
- *        → "-m" is a flag, "-rssi" has value "92", "-snr" has value "4.5",
- *           "-data" has a message payload as its value.
+ * **Supported Input Examples:**
+ * --------------------------
+ * - "-m -rssi 92 -snr 4.5 -data 0x4F2B000131~shrek~donkey~Shut Up"
+ * → "-m" is a flag, "-rssi" has value "92", "-snr" has value "4.5",
+ * "-data" has a message payload as its value.
  *
- *      - "hello world" (no arguments)
- *        → Nothing is parsed; all keys/values are empty.
+ * - "hello world" (no arguments)
+ * → Nothing is parsed; all keys/values are empty.
  *
- *      - "-sf 7 -bw 125 -cr 4/5"
- *        → Three key/value pairs: "-sf":"7", "-bw":"125", "-cr":"4/5".
+ * - "-sf 7 -bw 125 -cr 4/5"
+ * → Three key/value pairs: "-sf":"7", "-bw":"125", "-cr":"4/5".
  *
- *    **Why This is Useful in ViaText:**
- *    --------------------------
- *    The ArgParser lets ViaText nodes (on Linux, ESP32, or elsewhere)
- *    interpret messages in a standard way, whether the message arrives via
- *    CLI, serial, LoRa, or another medium. It enables easy extraction of
- *    commands, flags, settings, or message content—no matter where or how
- *    the message was created.
+ * **Why This is Useful in ViaText:**
+ * --------------------------
+ * The ArgParser lets ViaText nodes (on Linux, ESP32, or elsewhere)
+ * interpret messages in a standard way, whether the message arrives via
+ * CLI, serial, LoRa, or another medium. It enables easy extraction of
+ * commands, flags, settings, or message content—no matter where or how
+ * the message was created.
  *
- *    **Core Features:**
- *    --------------------------
- *      - Parse any string for arguments and flags
- *      - Quickly check if a key/flag is present
- *      - Retrieve argument values as strings
- *      - Special support for message payloads (e.g. "-data" key)
- *      - Simple and portable—works on both ESP32 and Linux
- *      - Friendly, readable code for learners and maintainers
+ * **Core Features:**
+ * --------------------------
+ * - Parse any string for arguments and flags
+ * - Quickly check if a key/flag is present
+ * - Retrieve argument values as strings
+ * - New: Retrieve argument values as `int`, `float`, or `bool` with error handling.
+ * - Special support for message payloads (e.g. "-data" key)
+ * - Simple and portable—works on both ESP32 and Linux
+ * - Friendly, readable code for learners and maintainers
  *
- *    @author   Leo
- *    @author   ChatGPT
- *    @date     2025-08-05
+ * @author   Leo
+ * @author   ChatGPT
+ * @date     2025-08-05
  */
 
 #pragma once
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <stdexcept>
 
 namespace viatext{
 
-    /**
+/**
  * @class ArgParser
  * @brief Command/argument string parser for ViaText and related applications.
  *
@@ -86,7 +88,7 @@ namespace viatext{
  * 
  * - Parsing LoRa or serial messages with argument-style prefixes.
  * - Extracting radio parameters (like `-rssi 92` or `-sf 7`).
- * - Detecting flags (like `-m` for mode) or simple presence/absence switches.
+ * - Detecting flags (like "-m") or simple presence/absence switches.
  * - Quickly breaking out and splitting complex message content using a key (like `-data`).
  *
  * Special Behaviors
@@ -122,6 +124,11 @@ class ArgParser {
 public:
     ArgParser();
     
+    explicit ArgParser(const std::string& input);
+
+    // Renamed for clarity, since it's the first key, not a 'message type'
+    std::string get_first_arg_key() const;
+
     /**
      * @brief Constructor that immediately parses an input string.
      * @param input The argument string to parse (e.g. "-foo 5 -bar test").
@@ -129,17 +136,6 @@ public:
      * This lets you create and initialize an ArgParser in one line.
      * Example:
      *   ArgParser parser("-m -data Hello~world");
-     */
-    explicit ArgParser(const std::string& input);
-
-    std::string get_message_type() const;
-
-    /**
-     * @brief Parse an argument string and store the key-value pairs.
-     * @param input The string to parse, in argument style (e.g. "-rssi 92 -foo bar").
-     *
-     * You can call this multiple times to re-use the parser for new input.
-     * Previous arguments are cleared before parsing the new input.
      */
     void parse_args(const std::string& input);
 
@@ -161,6 +157,32 @@ public:
      * For flags (like "-m") this returns an empty string.
      */
     std::string get_arg(const std::string& key) const;
+    
+    /**
+     * @brief Get an argument's value as an integer.
+     * @param key The argument name.
+     * @param default_value The value to return if the key is not found or conversion fails.
+     * @return The converted integer value, or the default value.
+     */
+    int get_int_arg(const std::string& key, int default_value = 0) const;
+
+    /**
+     * @brief Get an argument's value as a float.
+     * @param key The argument name.
+     * @param default_value The value to return if the key is not found or conversion fails.
+     * @return The converted float value, or the default value.
+     */
+    float get_float_arg(const std::string& key, float default_value = 0.0f) const;
+
+    /**
+     * @brief Get an argument's value as a boolean.
+     * @param key The argument name.
+     * @return true if the argument exists as a flag or has a value; false otherwise.
+     *
+     * This is an alternative to `has_arg` that can also be used with keys that have values.
+     * For example, `-wifi` would return true, as would `-count 10`.
+     */
+    bool get_bool_arg(const std::string& key) const;
 
     /**
      * @brief Shortcut for retrieving the message payload from the "-data" key.
@@ -179,6 +201,7 @@ public:
      */
     std::vector<std::string> parse_message() const;
 
+
     /**
      * @brief Get all parsed arguments and their values for debugging or inspection.
      * @return A vector of key-value pairs (argument, value), as stored in the parser.
@@ -195,11 +218,22 @@ public:
      */
     void clear();
 
+    /**
+     * @brief If debug is enabled, print all parsed arguments to standard output.
+     */
+    void print_debug();
 
 private:
     std::unordered_map<std::string, std::string> arguments;
+    
+    // The argument_order vector is no longer necessary with the new parsing logic.
+    // I'll leave it in for now and comment it out so you can see why it's not needed.
+    // std::vector<std::string> argument_order; 
+    
+    // The parsing function has been refactored to be more robust.
     void parse_internal(const std::string& input);
-    std::vector<std::string> argument_order;
+
+    // This is a helper function for splitting strings. It is still useful.
     static std::vector<std::string> split(const std::string& input, char delimiter);
 };
 }  // namespace viatext
