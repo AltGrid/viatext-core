@@ -132,6 +132,8 @@ public:
      */
     explicit ArgParser(const std::string& input);
 
+    std::string get_message_type() const;
+
     /**
      * @brief Parse an argument string and store the key-value pairs.
      * @param input The string to parse, in argument style (e.g. "-rssi 92 -foo bar").
@@ -197,6 +199,7 @@ public:
 private:
     std::unordered_map<std::string, std::string> arguments;
     void parse_internal(const std::string& input);
+    std::vector<std::string> argument_order;
     static std::vector<std::string> split(const std::string& input, char delimiter);
 };
 }  // namespace viatext

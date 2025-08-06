@@ -16,6 +16,13 @@ void ArgParser::parse_args(const std::string& input) {
     parse_internal(input);
 }
 
+std::string ArgParser::get_message_type() const {
+    if (!argument_order.empty())
+        return argument_order[0];
+    return "";
+}
+
+
 bool ArgParser::has_arg(const std::string& key) const {
     return arguments.find(key) != arguments.end();
 }
@@ -50,6 +57,7 @@ std::vector<std::pair<std::string, std::string>> ArgParser::get_all_args() const
 
 void ArgParser::clear() {
     arguments.clear();
+    argument_order.clear();
 }
 
 void ArgParser::parse_internal(const std::string& input) {
@@ -59,7 +67,6 @@ void ArgParser::parse_internal(const std::string& input) {
 
     while (stream >> token) {
         if (token.size() > 1 && token[0] == '-' && std::isalpha(token[1])) {
-            // This is a key (argument)
             last_key = token;
             // Peek at next char: if space or end, it's a flag
             std::streampos pos = stream.tellg();
@@ -67,21 +74,30 @@ void ArgParser::parse_internal(const std::string& input) {
             if (!(stream >> next_token)) {
                 // No next token, so this key is a flag
                 arguments[last_key] = "";
+                if (std::find(argument_order.begin(), argument_order.end(), last_key) == argument_order.end()) {
+                    argument_order.push_back(last_key);
+                }
                 break;
             }
-            // If next token starts with '-', treat current key as flag and process next key
             if (next_token.size() > 0 && next_token[0] == '-') {
                 arguments[last_key] = "";
+                if (std::find(argument_order.begin(), argument_order.end(), last_key) == argument_order.end()) {
+                    argument_order.push_back(last_key);
+                }
                 // "rewind" for next loop iteration
                 stream.seekg(pos);
                 continue;
             }
             // Otherwise, next token is the value for this key
             arguments[last_key] = next_token;
+            if (std::find(argument_order.begin(), argument_order.end(), last_key) == argument_order.end()) {
+                argument_order.push_back(last_key);
+            }
         }
         // Else: ignore unexpected values not attached to a key
     }
 }
+
 
 std::vector<std::string> ArgParser::split(const std::string& input, char delimiter) {
     std::vector<std::string> result;

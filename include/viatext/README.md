@@ -63,9 +63,198 @@ Implementations wrapping the Core must regularly call `tick(timestamp)` to maint
 - tick_count (how many ticks have passed)
 - uptime (always in milliseconds)
 - last_timestamp (always in milliseconds)
-- inbox (list) (populated by add_message)
-- outbox (list) (populated get_message)
+- inbox (list-like) (populated by add_message)
+- outbox (list-like) (populated get_message)
 - received_message_ids (list of message ids, avoid duplicates)
+
+### Full Process
+
+## Overview
+
+A ViaText node—whether LoRa, Linux (CLI, station, or daemon)—receives its initial input via whatever interface it is listening through. Each individual node, depending on its role, will add protocol-specific directives to the incoming message. For a LoRa node, it attaches packet info to the message in the form of command-line arguments, which are then parsed and processed by the core logic.
+
+---
+
+## LoRa Packet Reception Example
+
+### Initial Incoming Message
+
+Example received payload:
+
+```
+0x4F2B000131~shrek~donkey~Shut Up
+```
+
+### Attaching LoRa Metadata
+
+Since this is a LoRa node, it attaches packet info as arguments:
+
+```
+-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up
+```
+
+This Linux-style command (recognized internally in the core) contains all relevant radio metadata and message payload info.
+
+---
+
+## Command-Line Arguments Reference
+
+Below is a breakdown of the command-line arguments used by the system:
+
+| Argument        | Description                                                                                  |
+|-----------------|----------------------------------------------------------------------------------------------|
+| `-m`            | **Message/Operation Flag**: Identifier that signals a new message or specific operation.     |
+| `-rssi [value]` | **Received Signal Strength Indicator**: Signal power in dBm. Closer to 0 = stronger signal.  |
+| `-snr [value]`  | **Signal-to-Noise Ratio**: Strength relative to background noise. Positive is better.        |
+| `-sf [value]`   | **Spreading Factor**: Value 7–12; higher = longer range, lower data rate.                    |
+| `-bw [value]`   | **Bandwidth**: Frequency range in kHz (commonly 125, 250, 500).                             |
+| `-cr [value]`   | **Coding Rate**: Forward error correction rate. E.g., `4/5`, `4/6`, `4/7`, `4/8`.           |
+| `-data_length [value]` | **Data Length**: Payload size in bytes.                                                |
+| `-data [value]` | **Data Payload**: The actual message or content transmitted.                                 |
+
+---
+
+## Message Submission to Core
+
+After assigning all relevant info, the message is submitted to the core using:
+
+```
+add_message("-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up")
+```
+
+Submission can occur once or for multiple messages at a time.
+
+---
+
+## Message Processing Cycle
+
+Immediately after message submission, or after multiple messages have been submitted, the system begins processing:
+
+### 1. Tick Function
+
+The tick function is called with the current `millis` value:
+
+```
+tick(millis)
+```
+
+This updates all time and tick information in the system. Every time `tick(millis)` is called, **one message is processed** (first-in, first-out).
+
+### 2. Process Function
+
+After tick, the main process loop runs:
+
+```
+process()
+```
+
+This is the main decision thread.
+
+---
+
+## Argument Parsing and Message Object Creation
+
+1. **Argument Parsing:**
+   
+   The message string is parsed using an argument parser:
+   
+   ```cpp
+   args = ArgParser("-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up")
+   ```
+   
+   The ArgParser class returns a list of argument `key -> value` pairs for internal use.
+
+2. **Main Message Handling:**
+
+   A series of easily modifiable if statements run in priority: 
+
+   if(has_arg("-m")):
+       process_message(args);
+
+   if(has_arg("-p")):
+       respond_to_ping(args)
+
+   ...and so forth...there can be many of these. Since it is the main switch track, dozens or hundreds can exist, but for generic tasks for max usability. 
+
+   This is where the system shines, because these can be LoRa or Linux specific operations that do useful things, in messaging, IoT, Logging, etc. 
+
+   Continuing...
+   
+   If the argument `-m` exists, it is a basic message. The message data is retrieved via the `-data` argument:
+   
+   ```
+   0x4F2B000131~shrek~donkey~Shut Up
+   ```
+   
+   A Message object is created:
+   
+   ```cpp
+   message = Message("0x4F2B000131~shrek~donkey~Shut Up")
+   ```
+
+---
+
+## Message Object Structure
+
+The Message object extracts and contains all relevant information from the raw message string.
+
+### MessageID Struct
+
+- `sequence`  – The sequence ID of the message set
+- `part`      – Which message part in a series
+- `total`     – Total number of message parts in the series
+- `hops`      – Remaining hops allowed
+- `flags`     – Flags (e.g., request acknowledgement, acknowledged, encrypted)
+
+### Message Fields
+
+- `from`  – Who sent the message
+- `to`    – Who is the intended recipient
+- `data`  – The message payload/content
+
+The message object holds lots of information for decision making. 
+
+With args and message parsed, we can verify if we are the intended recipient by comparing node_id to message id, using 
+
+```
+bool addressed_to_here(to)
+
+```
+
+if it is addressed to this node, we combine it with a recieved argument -r, and other arguments pertaining:
+
+```
+recieved = '-r -from <from> -data "0x4F2B000131~shrek~donkey~Shut Up'
+```
+
+It will also check the message_id struct to see:
+
+Is it encrypted? (not yet implemented)
+
+Does it require acknowledgment? Then set up the ack message. (not yet implemented)
+
+If requires acknowledgment
+
+and then:
+
+```
+stash_to_outbox(recieved)
+stash_to_outbox(ack) (not yet implemented)
+```
+
+When the wrapper calls 
+
+```
+get_message()
+```
+
+It will get first in / first out messages, which it will respond to according to it's own manner. For example, a LoRa might save the message to history for viewing later. 
+
+The main pattern is this:
+
+Text IN, Text OUT. 
+
+How the wrappers use the processed information will differ in each case. 
 
 ### Internal methods / functions:
 
@@ -74,7 +263,7 @@ Implementations wrapping the Core must regularly call `tick(timestamp)` to maint
 
 ---
 
-## Internal Logic
+## Internal Logic, Recap
 
 ### LoRa Message Structure
 
