@@ -355,84 +355,76 @@ Uses the parser class to retrieve the ordered data.
 
 ## ViaText Message ID Format
 
-ViaText uses a **compact 6-byte message header**, combining a 32-bit message ID with a shared 8-bit field for hops and flags. This structure supports message fragmentation, delivery state, and routing control in a tight, platform-agnostic format optimized for constrained networks like LoRa.
+ViaText uses a **compact 5-byte message header**, combining a 32-bit message ID with a shared 8-bit field for hops and flags. This structure supports message fragmentation, delivery state, and routing control in a tight, platform-agnostic format optimized for constrained networks like LoRa.
 
 ---
 
-### Structure
+# ViaText MessageID Format (5-Byte Header)
 
-Message headers are now packed into a **6-byte structure** (48 bits total), embedding all essential tracking and routing metadata directly into a compact, uniform block.
+The `MessageID` struct is the compact 5-byte message header used in the ViaText protocol for all routing, delivery, and fragmentation operations.
 
-| Field        | Bits | Size (Bytes) | Description                          | Max Value |
-|--------------|------|--------------|--------------------------------------|-----------|
-| Sequence     | 16   | 2            | Unique message identifier            | 65535     |
-| Part Number  | 8    | 1            | Index of this part (0-based)         | 255       |
-| Total Parts  | 8    | 1            | Total number of parts in the message | 255       |
-| Hops         | 4    | — (within 1) | Hop count or TTL (max 15 hops)       | 15        |
-| Flags        | 4    | — (within 1) | Acknowledge and Encryption flags     | —         |
+## Overview
 
-- **Total size**: `48 bits` = `6 bytes` = just **5% of a 120-byte LoRa packet**
-- Combines message fragmentation, state, and routing metadata in a single compact unit
+Each ViaText message begins with a fixed-length, binary header with the following layout:
 
----
+| Field        | Bits | Bytes | Description                              |
+|--------------|------|-------|------------------------------------------|
+| Sequence     | 16   | 2     | Message-wide unique ID                   |
+| Part Number  | 8    | 1     | Which fragment this is (0–255)           |
+| Total Parts  | 8    | 1     | Total number of fragments (1–255)        |
+| Hops         | 4    | —     | Hop count for TTL-style rebroadcast      |
+| Flags        | 4    | —     | Delivery status, ACK, encryption, etc.   |
 
-**"Sequence"** refers to the overarching message ID — which may span several packets if fragmentation is used. For example, message #28 might consist of 5 parts: 1 of 5, 2 of 5, ..., 5 of 5. Each part shares the same sequence ID.
+## Byte Layout
 
-This structure allows the receiver to quickly determine:
+Packed into 5 bytes:
 
-- **Which part of which message** is being received
-- **Who sent it** (via external from-ID metadata)
-- **Whether it was already received (via bit flags)**
-- **If it’s encrypted or a reply (via bit flags)**
-- **How many hops it has taken**
-
----
-
-### Bit Layout
+- **Bytes 0–1**: 16-bit sequence number (big-endian)
+- **Byte 2**: Fragment index (`part`)
+- **Byte 3**: Total number of fragments (`total`)
+- **Byte 4**: High 4 bits = `hops` (0–15), low 4 bits = `flags` (bitmask)
 
 ```
 [ Sequence (16 bits) ][ Part (8 bits) ][ Total (8 bits) ][ Hops (4 bits) ][ Flags (4 bits) ]
          0xFFFF             0xFF             0xFF           0bHHHH            0bFFFF
 ```
 
-Packed as 6 bytes total.
+## Example
 
-Example:
+A raw message ID encoded as:
+
 ```
-Sequence:   0x001C   (28)
-Part:       0x05     (5 of ...)
-Total:      0x07     (total 7 parts)
-Hops:       0x0A     (10 hops)
-Flags:      0b1100   (e.g. ACK + Encrypted + two reserved bits)
-
-→ Raw: [0x00, 0x1C, 0x05, 0x07, 0b1010 << 4 | 0b1100] = 6 bytes
+[0x00, 0x1C, 0x05, 0x07, 0xAC]
 ```
 
+Would be decoded as:
+
+- `Sequence = 0x001C` → 28
+- `Part = 0x05` → 5
+- `Total = 0x07` → 7 fragments total
+- `Hops = 0xA` → 10 hops
+- `Flags = 0xC` → 0b1100 (ACK + Encrypted)
+
+## Flags Definition
+
+Flags are encoded in the lower 4 bits of the final byte.
+
+| Bit | Flag Name            | Meaning                               |
+|-----|----------------------|----------------------------------------|
+| 0   | Request ACK (0x1)    | Sender requests acknowledgment         |
+| 1   | ACK Reply (0x2)      | This message is an acknowledgment      |
+| 2   | Encrypted (0x4)      | Payload is encrypted                   |
+| 3   | Reserved (0x8)       | Reserved for future use                |
+
+## Why It Matters
+
+- **Compact**: 5 bytes total — fits well in LoRa, serial, and sneakernet payloads.
+- **Fragmentation-ready**: Supports split delivery and reassembly.
+- **Retry-safe**: Detects duplicates, ACKs, and replayed packets.
+- **Routing-aware**: TTL-style hop tracking in 4 bits.
+- **Encryption-aware**: Bit-flagged encrypted payloads.
+
 ---
-
-### Message Flags
-
-Flags are embedded into the **4 least significant bits** of the 6th byte.
-
-| Bit | Flag        | Meaning                            |
-|-----|-------------|------------------------------------|
-| 3–2 | Reserved    | Unused for now (set to 0)          |
-| 1   | Acknowledge | This message is an ACK reply       |
-| 0   | Encrypted   | Payload is encrypted               |
-
-The **upper 4 bits** of the same byte represent the **hop count** (0–15).
-
----
-
-### Why It Matters
-
-- **Compact**: All key routing and fragmentation data fit into 6 bytes
-- **Fragmentation-ready**: Supports multi-part payloads over constrained transports
-- **Retry-safe**: Stable sequence/part/total tuple enables deduplication
-- **Routing-aware**: Hop tracking enables TTL-style rebroadcast logic
-- **Minimalist**: Eliminates need for multiple parsing stages
-
-Perfectly tuned for low-power, store-and-forward systems like ViaText — where bandwidth efficiency, simplicity, and reliability are mission-critical.
 
 
 

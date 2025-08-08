@@ -1,239 +1,193 @@
+#ifndef VIATEXT_ARG_PARSER_HPP
+#define VIATEXT_ARG_PARSER_HPP
+
 /**
  * @file arg_parser.hpp
- * @brief ViaText Argument and Command String Parser
- * @details
- * The **ArgParser** class provides a simple, portable way to break down
- * command-line-style argument strings into named key/value pairs and flags.
+ * @brief Argument parser for ViaText: embedded-safe, heap-free, STL-free.
  *
- * **Purpose:**
- * --------------------------
- * In the ViaText system, messages can be sent in a variety of formats—
- * sometimes as raw text, but often using structured argument strings like
- * those found in Linux commands, radio firmware, or IoT protocols.
- * The ArgParser is designed to understand these formats and make it easy to
- * extract useful information, regardless of where the message comes from.
+ * Parses a TextFragments<> input stream character-by-character,
+ * tokenizes shell-style arguments, recognizes flags, key-value pairs,
+ * and "tail" keys that consume the rest of the input.
  *
- * **How It Works:**
- * --------------------------
- * - Any incoming string is accepted—ArgParser only engages its parsing logic if
- * it detects the argument pattern "-<key>" (a dash followed by a key).
- * - It treats tokens that start with a dash (like "-snr") as *argument keys*.
- * - If a key is immediately followed by a value (like "-snr 4.5"), the value is stored.
- * - If a key is *not* followed by a value (like "-m"), it is treated as a *flag*
- * and stored with an empty string.
- * - Values can be any text, including spaces, numbers, symbols, or special
- * payloads (such as LoRa packet data).
+ * Usage:
+ *   TextFragments<> fragments(raw_input);
+ *   ArgParser args(fragments);
+ *   if (args.has_flag("-m")) { ... }
+ *   auto val = args.get_argument("-rssi");
  *
- * **Supported Input Examples:**
- * --------------------------
- * - "-m -rssi 92 -snr 4.5 -data 0x4F2B000131~shrek~donkey~Shut Up"
- * → "-m" is a flag, "-rssi" has value "92", "-snr" has value "4.5",
- * "-data" has a message payload as its value.
+ * Requirements:
+ *   - ETL containers: etl::string<32>, etl::vector<...,8>, etl::map<...,12>
+ *   - No dynamic memory
+ *   - MCU-compatible
  *
- * - "hello world" (no arguments)
- * → Nothing is parsed; all keys/values are empty.
- *
- * - "-sf 7 -bw 125 -cr 4/5"
- * → Three key/value pairs: "-sf":"7", "-bw":"125", "-cr":"4/5".
- *
- * **Why This is Useful in ViaText:**
- * --------------------------
- * The ArgParser lets ViaText nodes (on Linux, ESP32, or elsewhere)
- * interpret messages in a standard way, whether the message arrives via
- * CLI, serial, LoRa, or another medium. It enables easy extraction of
- * commands, flags, settings, or message content—no matter where or how
- * the message was created.
- *
- * **Core Features:**
- * --------------------------
- * - Parse any string for arguments and flags
- * - Quickly check if a key/flag is present
- * - Retrieve argument values as strings
- * - New: Retrieve argument values as `int`, `float`, or `bool` with error handling.
- * - Special support for message payloads (e.g. "-data" key)
- * - Simple and portable—works on both ESP32 and Linux
- * - Friendly, readable code for learners and maintainers
- *
- * @author   Leo
- * @author   ChatGPT
- * @date     2025-08-05
+ * @author Leo
+ * @author ChatGPT
+ * @date 2025-08-07
  */
 
-#pragma once
-#include <string>
-#include <unordered_map>
-#include <vector>
-#include <stdexcept>
+#include "text_fragments.hpp"
+#include "etl/string.h"
+#include "etl/vector.h"
+#include "etl/map.h"
+#include <stdint.h>
 
-namespace viatext{
+namespace viatext {
 
-/**
- * @class ArgParser
- * @brief Command/argument string parser for ViaText and related applications.
- *
- * The ArgParser class allows any program or device to **analyze and extract key-value pairs or flags**
- * from a string that may contain arguments, commands, or message content—similar to Linux or radio firmware style.
- *
- * How to Use
- * 
- * 1. **Create an instance** (optionally passing an argument string).
- *    - Example: `ArgParser parser("-m -foo 5 -bar test -data Hello~world");`
- * 2. **Parse any string** with `parse_args(input_string)`.
- *    - You can parse multiple strings by calling `parse_args()` again.
- * 3. **Check for arguments or flags** using `has_arg("-foo")`.
- * 4. **Get the value for any argument** with `get_arg("-bar")`.
- * 5. **Retrieve the main message payload** (if present) using `get_message()` or `parse_message()`.
- *
- * Typical Use Cases
- * 
- * - Parsing LoRa or serial messages with argument-style prefixes.
- * - Extracting radio parameters (like `-rssi 92` or `-sf 7`).
- * - Detecting flags (like "-m") or simple presence/absence switches.
- * - Quickly breaking out and splitting complex message content using a key (like `-data`).
- *
- * Special Behaviors
- * 
- * - **Flags:** Any key present without a following value (e.g., `-m`) is stored as a flag (its value is an empty string).
- * - **Values:** Argument values can contain any text, including spaces and special characters.
- * - **Message Splitting:** The special method `parse_message()` splits the message payload from `-data` into a vector by `~`.
- * - **Orphan Values:** Any value not directly following a key is ignored.
- *
- * Design Goals
- * 
- * - **Simplicity:** Friendly for new C++ users—no tricky code or obscure naming.
- * - **Portability:** Works out-of-the-box on Linux and ESP32 (Arduino/ESP-IDF).
- * - **Efficiency:** Minimal memory and CPU usage; no unnecessary dependencies.
- * - **Clarity:** Every variable and function is clearly named and documented.
- *
- * Example
- * 
- * @code
- *   ArgParser parser("-m -rssi 92 -snr 4.5 -data 0xABC~foo~bar~msg");
- *   if (parser.has_arg("-rssi")) {
- *       std::string signal = parser.get_arg("-rssi"); // "92"
- *   }
- *   auto parts = parser.parse_message(); // ["0xABC", "foo", "bar", "msg"]
- * @endcode
- *
- * @author   Leo
- * @author   ChatGPT
- * @date     2025-08-05
- */
 class ArgParser {
-
 public:
-    ArgParser();
-    
-    explicit ArgParser(const std::string& input);
+    static constexpr size_t TOKEN_SIZE  = 32;
+    static constexpr size_t MAX_FLAGS   = 8;
+    static constexpr size_t MAX_ARGS    = 12;
+    static constexpr size_t MAX_TOKENS  = 16;
 
-    // Renamed for clarity, since it's the first key, not a 'message type'
-    std::string get_first_arg_key() const;
-
-    /**
-     * @brief Constructor that immediately parses an input string.
-     * @param input The argument string to parse (e.g. "-foo 5 -bar test").
-     *
-     * This lets you create and initialize an ArgParser in one line.
-     * Example:
-     *   ArgParser parser("-m -data Hello~world");
-     */
-    void parse_args(const std::string& input);
+    using token_t    = etl::string<TOKEN_SIZE>;
+    using flag_list_t = etl::vector<token_t, MAX_FLAGS>;
+    using arg_map_t   = etl::map<token_t, token_t, MAX_ARGS>;
 
     /**
-     * @brief Check if a specific argument or flag exists in the input.
-     * @param key The argument name to check (e.g. "-m" or "-foo").
-     * @return true if the argument or flag was found; false otherwise.
-     *
-     * Useful for detecting flags (like "-m") or optional arguments.
+     * @brief Construct and parse from a TextFragments stream.
+     * @param fragments Fragmented input; iterator is reset.
      */
-    bool has_arg(const std::string& key) const;
+    ArgParser(TextFragments<>& fragments) {
+        parse(fragments);
+    }
+
+    // Return the list of standalone flags
+    const flag_list_t& flags() const {
+        return m_flags;
+    }
+
+    // Return the map of all key→value arguments
+    const arg_map_t& arguments() const {
+        return m_args;
+    }
 
     /**
-     * @brief Retrieve the value for a given argument key.
-     * @param key The argument name (e.g. "-snr" or "-data").
-     * @return The value as a string, or an empty string if not found or if it’s a flag.
-     *
-     * Example: get_arg("-rssi") might return "92".
-     * For flags (like "-m") this returns an empty string.
+     * @brief Check if a standalone flag was provided.
+     * @param flag Key string (e.g. "-m").
+     * @return true if present.
      */
-    std::string get_arg(const std::string& key) const;
-    
-    /**
-     * @brief Get an argument's value as an integer.
-     * @param key The argument name.
-     * @param default_value The value to return if the key is not found or conversion fails.
-     * @return The converted integer value, or the default value.
-     */
-    int get_int_arg(const std::string& key, int default_value = 0) const;
+    bool has_flag(const token_t& flag) const {
+        for (size_t i = 0; i < m_flags.size(); ++i) {
+            if (m_flags[i] == flag) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
-     * @brief Get an argument's value as a float.
-     * @param key The argument name.
-     * @param default_value The value to return if the key is not found or conversion fails.
-     * @return The converted float value, or the default value.
+     * @brief Check if a key-value argument exists.
+     * @param key Key string (e.g. "-rssi").
+     * @return true if present.
      */
-    float get_float_arg(const std::string& key, float default_value = 0.0f) const;
+    bool has_argument(const token_t& key) const {
+        return m_args.find(key) != m_args.end();
+    }
 
     /**
-     * @brief Get an argument's value as a boolean.
-     * @param key The argument name.
-     * @return true if the argument exists as a flag or has a value; false otherwise.
-     *
-     * This is an alternative to `has_arg` that can also be used with keys that have values.
-     * For example, `-wifi` would return true, as would `-count 10`.
+     * @brief Retrieve a value for a key.
+     * @param key Key string.
+     * @return Reference to value string (empty if not found).
      */
-    bool get_bool_arg(const std::string& key) const;
+    const token_t& get_argument(const token_t& key) const {
+        auto it = m_args.find(key);
+        return (it != m_args.end()) ? it->second : m_empty;
+    }
 
     /**
-     * @brief Shortcut for retrieving the message payload from the "-data" key.
-     * @return The value of the "-data" argument, or an empty string if not present.
-     *
-     * This is handy if your argument string includes a full message after "-data".
+     * @brief Get the main directive (first token).
      */
-    std::string get_message() const;
-
-    /**
-     * @brief Split the message payload (from "-data") into parts, using '~' as a delimiter.
-     * @return A vector of strings, each representing a message part.
-     *
-     * For example, if "-data" is "foo~bar~baz", this returns {"foo", "bar", "baz"}.
-     * Returns an empty vector if "-data" is not present.
-     */
-    std::vector<std::string> parse_message() const;
-
-
-    /**
-     * @brief Get all parsed arguments and their values for debugging or inspection.
-     * @return A vector of key-value pairs (argument, value), as stored in the parser.
-     *
-     * Useful for printing all arguments, checking what was parsed, or logging.
-     */
-    std::vector<std::pair<std::string, std::string>> get_all_args() const;
-
-    /**
-     * @brief Remove all currently stored arguments and values.
-     *
-     * Use this before parsing a new string if you want to fully reset the parser.
-     * This is automatically called by parse_args().
-     */
-    void clear();
-
-    /**
-     * @brief If debug is enabled, print all parsed arguments to standard output.
-     */
-    void print_debug();
+    const token_t& directive() const {
+        return m_directive;
+    }
 
 private:
-    std::unordered_map<std::string, std::string> arguments;
-    
-    // The argument_order vector is no longer necessary with the new parsing logic.
-    // I'll leave it in for now and comment it out so you can see why it's not needed.
-    // std::vector<std::string> argument_order; 
-    
-    // The parsing function has been refactored to be more robust.
-    void parse_internal(const std::string& input);
+    token_t     m_directive;
+    flag_list_t m_flags;
+    arg_map_t   m_args;
+    token_t     m_empty;  ///< Returned for missing lookups
 
-    // This is a helper function for splitting strings. It is still useful.
-    static std::vector<std::string> split(const std::string& input, char delimiter);
+    /**
+     * @brief Parse the input fragments into flags and args.
+     */
+    void parse(TextFragments<>& fragments) {
+        fragments.reset_character_iterator();
+
+        // Gather tokens
+        etl::vector<token_t, MAX_TOKENS> tokens;
+        token_t tok;
+        while (true) {
+            tok.clear();
+            char c;
+            // Skip spaces
+            do {
+                c = fragments.get_next_character();
+            } while (c == ' ');
+            if (c == 0) break;
+            // Read token
+            do {
+                if (tok.size() < TOKEN_SIZE) {
+                    tok.push_back(c);
+                }
+                c = fragments.get_next_character();
+            } while (c != 0 && c != ' ');
+
+            if (!tok.empty() && tokens.size() < MAX_TOKENS) {
+                tokens.push_back(tok);
+            }
+            if (c == 0) break;
+        }
+
+        // Process tokens: first is directive
+        size_t idx = 0;
+        if (!tokens.empty()) {
+            m_directive = tokens[0];
+            idx = 1;
+        }
+
+        // List of tail keys that consume rest of input
+        static const token_t tailKeys[] = { token_t("-data") };
+
+        // Parse remaining tokens
+        while (idx < tokens.size()) {
+            token_t& key = tokens[idx];
+            // Check for tail key
+            bool isTail = false;
+            for (auto& tk : tailKeys) {
+                if (key == tk) {
+                    isTail = true;
+                    break;
+                }
+            }
+            if (isTail) {
+                // Join rest tokens into one value
+                token_t rest;
+                for (size_t j = idx + 1; j < tokens.size(); ++j) {
+                    if (rest.size() + tokens[j].size() + 1 < TOKEN_SIZE) {
+                        if (j > idx + 1) rest.push_back(' ');
+                        rest.append(tokens[j]);
+                    }
+                }
+                m_args.insert(arg_map_t::value_type(key, rest));
+                break;
+            }
+            // Try key-value pair
+            if (idx + 1 < tokens.size() && tokens[idx+1][0] != '-') {
+                m_args.insert(arg_map_t::value_type(key, tokens[idx+1]));
+                idx += 2;
+            }
+            else {
+                // Standalone flag
+                if (m_flags.size() < MAX_FLAGS) {
+                    m_flags.push_back(key);
+                }
+                idx++;
+            }
+        }
+    }
 };
-}  // namespace viatext
+
+} // namespace viatext
+
+#endif // VIATEXT_ARG_PARSER_HPP

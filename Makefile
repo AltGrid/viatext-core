@@ -1,52 +1,66 @@
-# ====== Makefile for ViaText-Core ======
+# Makefile for ViaText-Core
 
-CXX = g++
-CXXFLAGS = -std=c++17 \
-    -Iinclude \
-    -Iinclude/viatext \
-    -Ithird_party/CLI \
-    -Ithird_party/nlohmann \
-    -Wall \
-    -Wextra
+CXX      := g++
+CXXFLAGS := -std=c++17 \
+            -Iinclude \
+            -Ithird_party \
+            -Wall \
+            -Wextra
 
-# Core source and object files
-CORE_SRCS = \
-    src/core.cpp \
+# Core sources and objects
+CORE_SRCS := \
     src/message.cpp \
     src/message_id.cpp \
-    src/arg_parser.cpp \
-    src/routing.cpp
+    src/text_fragments.cpp
 
-CORE_OBJS = $(CORE_SRCS:.cpp=.o)
+CORE_OBJS := $(CORE_SRCS:.cpp=.o)
 
-# CLI sources
-CLI_MAIN = cli/main.cpp
-CLI_OBJ = cli/main.o
+LIB_CORE := libviatext-core.a
 
-# Target names
-LIB_CORE = libviatext-core.a
-CLI_BIN = cli/viatext-cli
+# Default target
+all: $(LIB_CORE) test-cli test-message-id
 
-# Default target: builds everything
-all: $(LIB_CORE) $(CLI_BIN)
-
-# Build static library from core object files
+# Build static library
 $(LIB_CORE): $(CORE_OBJS)
 	ar rcs $@ $^
 
-# Build CLI executable, linking with static library
-$(CLI_BIN): $(CLI_OBJ) $(LIB_CORE)
-	$(CXX) $(CXXFLAGS) -o $@ $(CLI_OBJ) $(LIB_CORE)
-
-# Compile core source files to object files
 src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Compile CLI main
-cli/main.o: cli/main.cpp
+# ------------------------
+# test-cli (CLI 1)
+# ------------------------
+
+TEST_CLI_SRC := tests/test-cli/main.cpp
+TEST_CLI_OBJ := $(TEST_CLI_SRC:.cpp=.o)
+TEST_CLI_BIN := test-cli
+
+test-cli: $(TEST_CLI_OBJ) $(LIB_CORE)
+	$(CXX) $(CXXFLAGS) -o $(TEST_CLI_BIN) $(TEST_CLI_OBJ) $(LIB_CORE)
+
+tests/test-cli/%.o: tests/test-cli/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# ------------------------
+# test-message-id (CLI 2)
+# ------------------------
+
+MSGID_SRC := tests/test-message-id/main.cpp
+MSGID_OBJ := $(MSGID_SRC:.cpp=.o)
+MSGID_BIN := test-message-id
+
+test-message-id: $(MSGID_OBJ) $(LIB_CORE)
+	$(CXX) $(CXXFLAGS) -o $(MSGID_BIN) $(MSGID_OBJ) $(LIB_CORE)
+
+tests/test-message-id/%.o: tests/test-message-id/%.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# ------------------------
+# Clean
+# ------------------------
+
 clean:
-	rm -f src/*.o cli/*.o $(LIB_CORE) $(CLI_BIN)
+	rm -f src/*.o tests/test-cli/*.o tests/test-message-id/*.o \
+	      $(LIB_CORE) test-cli test-message-id
 
 .PHONY: all clean

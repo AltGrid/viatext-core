@@ -1,253 +1,275 @@
-#include "message_id.hpp"
-#include <stdio.h> // For snprintf (string formatting)
-#include <string.h> //for strlen
+/**
+ * @file message_id.cpp
+ * @brief Implementation of the MessageID struct used in ViaText headers.
+ *
+ * This file provides the full implementation for the MessageID class, which represents
+ * a compact 5-byte routing and control header used in the ViaText protocol.
+ *
+ * Implemented methods include:
+ * - Constructors (default, from buffer, hex string, raw fields)
+ * - Packing and unpacking to/from raw byte arrays
+ * - Human-readable string conversion (embedded-safe)
+ * - Bitwise accessors for ACK/encryption flags
+ * - Static helpers for hex string parsing
+ *
+ * @note All methods are safe for cross-platform use (Linux, Arduino, etc.) and avoid heap allocation.
+ *
+ * @author Leo
+ * @author ChatGPT
+ */
+#include "viatext/message_id.hpp"
+
 namespace viatext {
 
-// -----------------------------------------------------------------------------
-// Default constructor
-// Sets all fields (sequence, part, total, hops, flags) to zero.
-// -----------------------------------------------------------------------------
-MessageID::MessageID()
-    : sequence(0), part(0), total(0), hops(0), flags(0)
-{}
+// =============================================================================
+// Constructors
+// =============================================================================
 
+// Default constructor.
+// Initializes all fields (sequence, part, total, hops, flags) to zero.
+// Useful as a neutral placeholder or for zero-initializing before unpacking.
+MessageID::MessageID() : sequence(0), part(0), total(0), hops(0), flags(0) {}
 
-// 1. Constructor: Populate from a 5-byte (40-bit) integer, big-endian order
+// Constructor from a packed 5-byte integer (big-endian format)
+
 MessageID::MessageID(uint64_t five_byte_value) {
-    uint8_t buf[5]; // Temporary buffer to hold 5 bytes
+    
+    // Create a temporary 5-byte buffer to hold each byte of the input value
+    uint8_t buf[5];
+    
+    // Extract the highest byte (bits 32–39) and store in buf[0]
+    buf[0] = (five_byte_value >> 32) & 0xFF;
+    
+    // Extract next highest byte (bits 24–31) → buf[1]
+    buf[1] = (five_byte_value >> 24) & 0xFF;
+    
+    // Extract middle byte (bits 16–23) → buf[2]
+    buf[2] = (five_byte_value >> 16) & 0xFF;
+    
+    // Extract second-lowest byte (bits 8–15) → buf[3]
+    buf[3] = (five_byte_value >> 8)  & 0xFF;
 
-    // We want to break the 40-bit integer into 5 bytes.
-    // Each line shifts the value to bring the correct byte into the least significant position, 
-    // then masks off everything else except the lowest byte (with & 0xFF).
-    // The most significant byte (leftmost in hex) is stored first (big-endian/network order).
+    // Extract lowest byte (bits 0–7) → buf[4]
+    buf[4] =  five_byte_value        & 0xFF;
 
-    buf[0] = (five_byte_value >> 32) & 0xFF; // Extract byte 1 (highest, leftmost in hex)
-    buf[1] = (five_byte_value >> 24) & 0xFF; // Extract byte 2
-    buf[2] = (five_byte_value >> 16) & 0xFF; // Extract byte 3
-    buf[3] = (five_byte_value >> 8)  & 0xFF; // Extract byte 4
-    buf[4] =  five_byte_value        & 0xFF; // Extract byte 5 (lowest, rightmost in hex)
-
-    // Now we have the message header as a byte array, ready for parsing
-    unpack(buf, 5); // This will decode sequence, part, total, hops, and flags
+    // Decode these 5 bytes into the message fields using existing unpack logic
+    unpack(buf, 5);
 }
 
-// 2. Constructor: Populate from hex string ("0x4F2B000131" or "4F2B000131")
+// Constructor from a 10-character hex string (e.g., "4F2B000131")
 MessageID::MessageID(const char* hex_str) {
-    uint8_t buf[5] = {0}; // Temporary buffer for parsed bytes
-
-    // Try to parse the input string into 5 bytes.
-    // hex_str_to_bytes handles optional "0x" prefix and validates length/content.
+    // Initialize a 5-byte buffer to zero — will hold parsed bytes if successful
+    uint8_t buf[5] = {0};
+    // Try to parse the hex string into the buffer
     if (hex_str_to_bytes(hex_str, buf, 5)) {
-        // If parsing succeeds, interpret the result as a message header
+        // If parsing succeeds, extract the fields from the buffer
         unpack(buf, 5);
     } else {
-        // If parsing fails (bad string/length/characters), set all fields to zero as a safe fallback
-        sequence = 0;
-        part = 0;
-        total = 0;
-        hops = 0;
-        flags = 0;
+        // If parsing fails, safely zero all fields
+        sequence = part = total = hops = flags = 0;
     }
 }
 
-
-// -----------------------------------------------------------------------------
-// Constructor: Initialize MessageID from a packed byte array
-// Reads all fields from the provided buffer using the unpack() function.
-// -----------------------------------------------------------------------------
+// Constructor from raw byte array (usually from a received packet)
 MessageID::MessageID(const uint8_t* data, size_t len) {
-    // Calls unpack() to extract all fields from the buffer.
+    // Delegate directly to unpack(): safely parses up to 5 bytes into fields
     unpack(data, len);
 }
 
-// -----------------------------------------------------------------------------
-// Constructor: Initialize MessageID from individual field values
-// -----------------------------------------------------------------------------
+// Constructor from raw field values
 MessageID::MessageID(uint16_t seq, uint8_t p, uint8_t tot, uint8_t h, uint8_t f)
-    : sequence(seq), part(p), total(tot), hops(h & 0x0F), flags(f & 0x0F)
-    // Only lower 4 bits of hops and flags are used (masked with 0x0F)
-{}
+    // Assign sequence, part, and total directly
+    : sequence(seq), part(p), total(tot), 
+    // Use only the lower 4 bits for hops (mask with 0x0F to enforce 4-bit limit)
+    hops(h & 0x0F), 
+    // Use only the lower 4 bits for flags (mask with 0x0F to enforce 4-bit limit)
+    flags(f & 0x0F) {}
 
+// Constructor with raw fields + optional flags for ACK and encryption
 MessageID::MessageID(uint16_t sequence, uint8_t part, uint8_t total, uint8_t hops,
-                     bool request_acknowledge, bool is_acknowledgment, 
+                     bool request_acknowledge, bool is_acknowledgment,
                      bool is_encrypted, bool unused)
     : sequence(sequence), part(part), total(total), hops(hops & 0x0F), flags(0)
 {
-    // Set flag bits according to input booleans
-    if (request_acknowledge) set_request_acknowledgment(request_acknowledge); // Bit 0
-    if (is_acknowledgment)   set_is_acknowledgment(is_acknowledgment);        // Bit 1
-    if (is_encrypted)        set_is_encrypted(is_encrypted);                  // Bit 2
-    if (unused)              flags |= 0x8;    // Bit 3 (unused/reserved)
+    // Set flag bit 0 if ACK is requested
+    if (request_acknowledge) set_request_acknowledgment(true);
+    // Set flag bit 1 if this is an ACK message
+    if (is_acknowledgment)   set_is_acknowledgment(true);
+    // Set flag bit 2 if the message is encrypted
+    if (is_encrypted)        set_is_encrypted(true);
+    // Set flag bit 3 if explicitly requested (reserved/future use)
+    if (unused)              flags |= 0x8;
 }
 
+// =============================================================================
+// Packing & Unpacking
+// =============================================================================
 
-// -----------------------------------------------------------------------------
-// pack() — Packs all fields into a 5-byte array (LoRa message header format)
-// The packed array will be used for transmission/storage.
-// Format: [0]=sequence high byte, [1]=sequence low byte, [2]=part, [3]=total, [4]=hops+flags
-// -----------------------------------------------------------------------------
+// Convert internal fields into a 5-byte buffer for transmission
 void MessageID::pack(uint8_t* out_buf) const {
-    // Sequence number is split into two bytes (big-endian format)
-    out_buf[0] = (sequence >> 8) & 0xFF; // High byte of sequence
-    out_buf[1] = sequence & 0xFF;        // Low byte of sequence
-    out_buf[2] = part;                   // Part number
-    out_buf[3] = total;                  // Total parts
+    // Store the high byte of the 16-bit sequence number (big-endian)
+    out_buf[0] = (sequence >> 8) & 0xFF;
+
+    // Store the low byte of the sequence number
+    out_buf[1] = sequence & 0xFF;
+
+    // Store the part number (which fragment this is)
+    out_buf[2] = part;
+
+    // Store the total number of parts in the full message
+    out_buf[3] = total;
+
     // Combine hops (upper 4 bits) and flags (lower 4 bits) into one byte
     out_buf[4] = ((hops & 0x0F) << 4) | (flags & 0x0F);
 }
 
-// -----------------------------------------------------------------------------
-// unpack() — Parses a packed 5-byte (or 5-byte) array and populates all fields
-// If input is too short (<5 bytes), all fields are set to zero.
-// -----------------------------------------------------------------------------
+// Convert a 5-byte buffer into internal fields for routing and control
 void MessageID::unpack(const uint8_t* in_buf, size_t len) {
+    // If the buffer is too short, clear all fields for safety
     if (len < 5) {
-        // Not enough data — clear all fields
-        sequence = 0;
-        part = 0;
-        total = 0;
-        hops = 0;
-        flags = 0;
+        sequence = part = total = hops = flags = 0;
         return;
     }
-    // Sequence number (16 bits): combine high and low bytes
+
+    // Combine first two bytes into a 16-bit sequence number (big-endian)
     sequence = (in_buf[0] << 8) | in_buf[1];
-    part     = in_buf[2];                   // Part number
-    total    = in_buf[3];                   // Total number of parts
-    // Unpack hops and flags from a single byte
-    hops     = (in_buf[4] >> 4) & 0x0F;     // Hops: upper 4 bits
-    flags    = in_buf[4] & 0x0F;            // Flags: lower 4 bits
+
+    // Extract fragment index
+    part     = in_buf[2];
+
+    // Extract total number of parts
+    total    = in_buf[3];
+
+    // Extract hops from upper 4 bits of byte 4
+    hops     = (in_buf[4] >> 4) & 0x0F;
+
+    // Extract flags from lower 4 bits of byte 4
+    flags    = in_buf[4] & 0x0F;
 }
 
-// -----------------------------------------------------------------------------
-// to_string() — Formats the MessageID fields as a human-readable C string
-// Example: "SEQ:28 PART:5/7 HOPS:10 FLAGS:0xC"
-// Useful for logging, debugging, or CLI output.
-// -----------------------------------------------------------------------------
+
+// Portable (Arduino-safe) version: no snprintf, only manual int-to-string.
 void MessageID::to_string(char* out, size_t max_len) const {
-    // snprintf safely writes up to max_len-1 characters, always null-terminated
-    snprintf(out, max_len, "SEQ:%u PART:%u/%u HOPS:%u FLAGS:0x%X",
-        sequence, part, total, hops, flags);
+    // Minimal, heap-free, Arduino/embedded safe: use simple integer to string conversion.
+    // Example: "SEQ:1234 PART:2/3 HOPS:1 FLAGS:0xA"
+    // Buffer should be at least 40 bytes; overflow is clipped.
+    int idx = 0;
+    #define PUT(s) do { const char* p = (s); while (*p && idx < int(max_len)-1) out[idx++] = *p++; } while (0)
+    #define PUTHEX(x) do { \
+        uint8_t v = (x); \
+        if (v < 10) out[idx++] = '0' + v; \
+        else if (v < 16) out[idx++] = 'A' + (v-10); \
+    } while(0)
+    // -- Compose
+    PUT("SEQ:"); // Sequence number
+    int val = sequence;
+    char tmp[6]; int ti = 0;
+    if (val == 0) tmp[ti++] = '0';
+    else { int v = val, digits[5], d = 0; while (v && d < 5) { digits[d++] = v % 10; v /= 10; }
+        while (d--) tmp[ti++] = '0' + digits[d]; }
+    for (int j=0;j<ti&&idx<int(max_len)-1;++j) out[idx++] = tmp[j];
+    PUT(" PART:");
+    tmp[0] = '0' + (part / 10); tmp[1] = '0' + (part % 10); int plen = (part>=10)?2:1;
+    for(int j=(part>=10?0:1);j<plen;++j) out[idx++] = tmp[j];
+    out[idx++] = '/';
+    tmp[0] = '0' + (total / 10); tmp[1] = '0' + (total % 10); int tlen = (total>=10)?2:1;
+    for(int j=(total>=10?0:1);j<tlen;++j) out[idx++] = tmp[j];
+    PUT(" HOPS:");
+    out[idx++] = '0' + (hops / 10);
+    out[idx++] = '0' + (hops % 10);
+    PUT(" FLAGS:0x");
+    uint8_t f = flags;
+    if (f >= 10) out[idx++] = 'A' + (f - 10); else out[idx++] = '0' + f;
+    out[idx] = 0; // null terminate
+    #undef PUT
+    #undef PUTHEX
 }
 
-// -----------------------------------------------------------------------------
-// Returns true if the "request acknowledgment" flag (bit 0) is set.
-// This means the sender wants the recipient to reply with an ACK message.
-// -----------------------------------------------------------------------------
-bool MessageID::requests_acknowledgment() const {
-    // Bit 0 (0x1): If set, ACK is requested.
-    // Use bitwise AND to isolate bit 0; if the result is nonzero, it's set.
-    return (flags & 0x1) != 0;
-}
+// =============================================================================
+// Getting & Setting
+// =============================================================================
 
-// -----------------------------------------------------------------------------
-// Returns true if the "acknowledgment" flag (bit 1) is set.
-// This means the message itself is an ACK reply.
-// -----------------------------------------------------------------------------
-bool MessageID::is_acknowledgment() const {
-    // Bit 1 (0x2): If set, this is an ACK message.
-    // Use bitwise AND with 0x2 to check bit 1.
-    return (flags & 0x2) != 0;
-}
+// Check if the "request acknowledgment" flag (bit 0) is set
+bool MessageID::requests_acknowledgment() const { return (flags & 0x1) != 0; }
 
-// -----------------------------------------------------------------------------
-// Returns true if the "encrypted" flag (bit 2) is set.
-// This means the payload of the message is encrypted.
-// -----------------------------------------------------------------------------
-bool MessageID::is_encrypted() const {
-    // Bit 2 (0x4): If set, payload is encrypted.
-    // Use bitwise AND with 0x4 to check bit 2.
-    return (flags & 0x4) != 0;
-}
+// Check if the "acknowledgment" flag (bit 1) is set
+bool MessageID::is_acknowledgment() const { return (flags & 0x2) != 0; }
 
-// -----------------------------------------------------------------------------
-// Sets or clears the "request acknowledgment" flag (bit 0).
-// If enable is true, sets bit 0 (sender requests ACK). If false, clears it.
-void MessageID::set_request_acknowledgment(bool enable) {
-    if (enable) {
-        flags |= 0x1;   // Set bit 0 using bitwise OR
-    } else {
-        flags &= ~0x1;  // Clear bit 0 using bitwise AND with inverted mask
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Sets or clears the "acknowledgment" flag (bit 1).
-// If enable is true, sets bit 1 (this is an ACK reply). If false, clears it.
-void MessageID::set_is_acknowledgment(bool enable) {
-    if (enable) {
-        flags |= 0x2;   // Set bit 1 using bitwise OR
-    } else {
-        flags &= ~0x2;  // Clear bit 1 using bitwise AND with inverted mask
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Sets or clears the "encrypted" flag (bit 2).
-// If enable is true, sets bit 2 (payload is encrypted). If false, clears it.
-void MessageID::set_is_encrypted(bool enable) {
-    if (enable) {
-        flags |= 0x4;   // Set bit 2 using bitwise OR
-    } else {
-        flags &= ~0x4;  // Clear bit 2 using bitwise AND with inverted mask
-    }
-}
+// Check if the "encrypted" flag (bit 2) is set
+bool MessageID::is_encrypted() const { return (flags & 0x4) != 0; }
 
 
-// --- PRIVATE HELPERS ---
+// Set or clear the "request acknowledgment" flag (bit 0)
+void MessageID::set_request_acknowledgment(bool enable) { if (enable) flags |= 0x1; else flags &= ~0x1; }
 
-// Convert a single hex character ('0'-'9', 'A'-'F', 'a'-'f') to its numeric value (0-15).
-// Returns true if the character is valid, false if not.
+// Set or clear the "acknowledgment" flag (bit 1)
+void MessageID::set_is_acknowledgment(bool enable) { if (enable) flags |= 0x2; else flags &= ~0x2; }
+
+/// Set or clear the "encrypted" flag (bit 2)
+void MessageID::set_is_encrypted(bool enable) { if (enable) flags |= 0x4; else flags &= ~0x4; }
+
+// =============================================================================
+// Conversion
+// =============================================================================
+
+// Convert a single hexadecimal character (0–9, A–F, a–f) into its numeric value (0–15)
 bool MessageID::hex_char_to_val(char c, uint8_t& out) {
-    // Check if the character is a decimal digit (0-9)
+    // If character is between '0' and '9', subtract '0' to get value (e.g., '3' → 3)
     if ('0' <= c && c <= '9') {
-        out = c - '0';        // e.g. '4' - '0' == 4
+        out = c - '0';
         return true;
     }
-    // Check if the character is an uppercase letter (A-F)
+
+    // If character is between 'A' and 'F', subtract 'A' and add 10 (e.g., 'B' → 11)
     if ('A' <= c && c <= 'F') {
-        out = c - 'A' + 10;   // e.g. 'C' - 'A' == 2, 2 + 10 == 12
+        out = c - 'A' + 10;
         return true;
     }
-    // Check if the character is a lowercase letter (a-f)
+
+    // If character is between 'a' and 'f', subtract 'a' and add 10 (e.g., 'd' → 13)
     if ('a' <= c && c <= 'f') {
-        out = c - 'a' + 10;   // e.g. 'e' - 'a' == 4, 4 + 10 == 14
+        out = c - 'a' + 10;
         return true;
     }
-    // Character is not a valid hex digit
+
+    // Invalid hex character — return false and leave `out` unchanged
     return false;
 }
 
-// Converts a hex string (optionally prefixed with "0x" or "0X") into a byte array.
-// Fills out_bytes with the result if successful.
-// bytes_needed is the expected number of bytes to extract (should be 5 for MessageID).
-// Returns true on success, false if the input is malformed.
-bool MessageID::hex_str_to_bytes(const char* str, uint8_t* out_bytes, size_t bytes_needed) {
-    size_t len = strlen(str); // Get the length of the input string
 
-    // Check if the string starts with "0x" or "0X"
-    if (len >= 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
-        str += 2;     // Move the pointer past the prefix
-        len -= 2;     // Reduce the length accordingly
+// Convert a hexadecimal string (e.g., "4F2B000131") into a byte array
+bool MessageID::hex_str_to_bytes(const char* str, uint8_t* out_bytes, size_t bytes_needed) {
+    size_t len = 0;
+    const char* p = str;
+
+    // Skip optional "0x" or "0X" prefix if present
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
     }
 
-    // The string must now be exactly twice as long as the number of bytes we need (2 hex chars per byte)
-    if (len != bytes_needed * 2)
-        return false; // Input is the wrong length—fail
+    // Compute the length of the remaining string (up to 20 characters max)
+    const char* q = p;
+    while (q[len] && ++len < 20) {}
 
-    // Loop through each byte to build
+    // The hex string must be exactly 2 characters per byte (no more, no less)
+    if (len != bytes_needed * 2) return false;
+
+    // Parse each byte: two hex characters → one byte
     for (size_t i = 0; i < bytes_needed; ++i) {
-        uint8_t hi = 0, lo = 0; // Will hold high and low nibble (half-bytes)
-        // Convert the first hex digit of the pair (high nibble)
-        if (!hex_char_to_val(str[i*2], hi)) return false;   // Fail if not valid
-        // Convert the second hex digit of the pair (low nibble)
-        if (!hex_char_to_val(str[i*2+1], lo)) return false; // Fail if not valid
-        // Combine the two nibbles into one byte (e.g. 'A5' → (0xA << 4) | 0x5 == 0xA5)
+        uint8_t hi = 0, lo = 0;
+
+        // Convert high nibble (first hex digit of the pair)
+        if (!hex_char_to_val(p[i * 2], hi)) return false;
+
+        // Convert low nibble (second hex digit of the pair)
+        if (!hex_char_to_val(p[i * 2 + 1], lo)) return false;
+
+        // Combine high and low nibbles into a full byte
         out_bytes[i] = (hi << 4) | lo;
     }
-    // All digits valid, output array filled
+
+    // Successfully converted all hex pairs into bytes
     return true;
 }
-
 
 } // namespace viatext
