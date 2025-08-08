@@ -11,7 +11,8 @@ CXXFLAGS := -std=c++17 \
 CORE_SRCS := \
     src/message.cpp \
     src/message_id.cpp \
-    src/text_fragments.cpp
+    src/text_fragments.cpp \
+    src/core.cpp               # <-- ADDED
 
 CORE_OBJS := $(CORE_SRCS:.cpp=.o)
 
@@ -61,6 +62,6 @@ tests/test-message-id/%.o: tests/test-message-id/%.cpp
 
 clean:
 	rm -f src/*.o tests/test-cli/*.o tests/test-message-id/*.o \
-	      $(LIB_CORE) test-cli test-message-id
+	      $(LIB_CORE) tests/tcli tests/tmid
 
 .PHONY: all clean
