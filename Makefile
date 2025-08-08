@@ -33,7 +33,7 @@ src/%.o: src/%.cpp
 
 TEST_CLI_SRC := tests/test-cli/main.cpp
 TEST_CLI_OBJ := $(TEST_CLI_SRC:.cpp=.o)
-TEST_CLI_BIN := test-cli
+TEST_CLI_BIN := tests/tcli
 
 test-cli: $(TEST_CLI_OBJ) $(LIB_CORE)
 	$(CXX) $(CXXFLAGS) -o $(TEST_CLI_BIN) $(TEST_CLI_OBJ) $(LIB_CORE)
@@ -47,7 +47,7 @@ tests/test-cli/%.o: tests/test-cli/%.cpp
 
 MSGID_SRC := tests/test-message-id/main.cpp
 MSGID_OBJ := $(MSGID_SRC:.cpp=.o)
-MSGID_BIN := test-message-id
+MSGID_BIN := tests/tmid
 
 test-message-id: $(MSGID_OBJ) $(LIB_CORE)
 	$(CXX) $(CXXFLAGS) -o $(MSGID_BIN) $(MSGID_OBJ) $(LIB_CORE)
