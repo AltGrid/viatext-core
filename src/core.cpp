@@ -14,8 +14,27 @@ Core::Core(const NodeIdStr& node_id)
   // nothing else
 }
 
+Core::Core(const char* node_id) {
+  NodeIdStr tmp;
+  if (node_id) {
+    // safe, bounded copy into etl::string<8>
+    size_t n = 0;
+    while (node_id[n] && n < tmp.max_size()) { tmp += node_id[n++]; }
+  }
+  node_id_ = tmp;
+}
+
 void Core::set_node_id(const NodeIdStr& node_id) {
   node_id_ = node_id;
+}
+
+void Core::set_node_id(const char* node_id) {
+  NodeIdStr tmp;
+  if (node_id) {
+    size_t n = 0;
+    while (node_id[n] && n < tmp.max_size()) { tmp += node_id[n++]; }
+  }
+  node_id_ = tmp;
 }
 
 const Core::NodeIdStr& Core::get_node_id() const {

@@ -2,6 +2,8 @@
 ├── AI
 │   ├── BLUEPRINTS.md
 │   └── README.md
+├── cli
+│   └── main.cpp
 ├── include
 │   └── viatext
 │       ├── core.hpp
@@ -22,11 +24,20 @@
 ├── tests
 │   ├── test-cli
 │   │   └── main.cpp
-│   └── test-message-id
-│       └── main.cpp
+│   ├── test_core_flows.cpp
+│   ├── test_core_policy.cpp
+│   ├── test_core_solo.cpp
+│   ├── test_core_time.cpp
+│   ├── test_main.cpp
+│   ├── test-message-id
+│   │   └── main.cpp
+│   ├── test_message_id.cpp
+│   └── test_package_args.cpp
+├── test.txt
 ├── third_party
 │   ├── CLI
 │   │   └── CLI11.hpp
+│   ├── doctest
 │   ├── etl
 │   │   ├── absolute.h
 │   │   ├── algorithm.h
@@ -455,4 +466,4 @@
 ├── tree.txt
 └── viatext.png
 
-20 directories, 436 files
+22 directories, 445 files

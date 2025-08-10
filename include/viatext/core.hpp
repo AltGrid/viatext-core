@@ -64,15 +64,27 @@ public:
 
   /// Node ID string type (fits your 1..6 char callsign with a bit of headroom).
   using NodeIdStr = etl::string<8>;
+  
 
+  
   /**
    * @brief Construct a Core with a node identity.
    * @param node_id Callsign/ID of this node (1..6 uppercase recommended).
    */
   explicit Core(const NodeIdStr& node_id);
 
+  /**
+   * @brief Construct a Core with a C-style node identity.
+   * @param node_id C-style string (null-terminated, 1..6 chars).
+   */
+  explicit Core(const char* node_id);
+
+
   /// @brief Change the node identity at runtime.
   void set_node_id(const NodeIdStr& node_id);
+
+  /// @brief Change the node identity at runtime.
+  void set_node_id(const char* node_id);
 
   /// @brief Read the node identity.
   const NodeIdStr& get_node_id() const;
