@@ -1,67 +1,120 @@
-# Makefile for ViaText-Core
+# =============================================================================
+# ViaText Core – Makefile quick guide
+#
+# Common targets
+#   make / make all     Build the static library only: libviatext-core.a
+#   make test           Build and run unit tests (doctest-based)
+#   make clean          Remove build artifacts
+#
+# Useful variables
+#   SAN=1               Enable AddressSanitizer + UndefinedBehaviorSanitizer
+#                       (adds -fsanitize=address,undefined -fno-omit-frame-pointer)
+#                       Example:  make SAN=1 test
+#
+#   RUN='...'           Extra args passed to the doctest runner.
+#                       Examples:
+#                         make test RUN='-s'                 # show successful tests
+#                         make test RUN='-tc="Ping*"'        # run matching test cases
+#
+# Toolchain requirements
+#   - GNU Make
+#   - C++17 compiler (g++ or clang++)
+#   - ar (for the static library)
+#
+# Test framework (header-only doctest)
+#   Tests require the doctest header to be available on the include path.
+#   Recommended (system packages):
+#     Fedora/RHEL:   sudo dnf install doctest-devel
+#     Ubuntu/Debian: sudo apt-get install doctest-dev
+#     Arch:          sudo pacman -S doctest
+#   Or vendor locally (keeps tests optional for users who don’t install it):
+#     mkdir -p third_party/doctest && \
+#     curl -L https://raw.githubusercontent.com/doctest/doctest/master/doctest/doctest.h \
+#          -o third_party/doctest/doctest.h
+#
+# Sanitizers (optional but recommended while developing)
+#   Link/Runtime libraries must be installed or linking will fail when SAN=1:
+#     Fedora/RHEL:   sudo dnf install libasan libubsan
+#     Ubuntu/Debian: sudo apt-get install libasan libubsan
+#     Arch:          provided by gcc/clang packages
+#   Capture sanitizer + test output:
+#     make SAN=1 test |& tee test.txt
+#     # or
+#     make SAN=1 test > test.txt 2>&1
+#
+# Notes
+#   - Library and tests are built separately: regular users can build the lib
+#     without installing doctest; only `make test` needs it.
+#   - Includes search both `include/` and `third_party/` by default.
+# =============================================================================
 
+
+# --- toolchain ---
 CXX      := g++
-CXXFLAGS := -std=c++17 \
-            -Iinclude \
-            -Ithird_party \
-            -Wall \
-            -Wextra
+AR       := ar
+ARFLAGS  := rcs
 
-# Core sources and objects
-CORE_SRCS := \
-    src/message.cpp \
-    src/message_id.cpp \
-    src/text_fragments.cpp \
-    src/core.cpp               # <-- ADDED
+# --- compile flags ---
+CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -MMD -MP
+CXXFLAGS += -Iinclude -Ithird_party   # ETL/CLI/doctest (vendored) headers
 
-CORE_OBJS := $(CORE_SRCS:.cpp=.o)
+# --- check memory errors with sanitizers ---
+SAN ?=
+SAN_FLAGS :=
+ifeq ($(SAN),1)
+SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
+endif
+CXXFLAGS += $(SAN_FLAGS)
 
-LIB_CORE := libviatext-core.a
+# --- library ---
+LIB      := libviatext-core.a
+LIB_OBJS := src/core.o src/message_id.o
+LIB_DEPS := $(LIB_OBJS:.o=.d)
 
-# Default target
-all: $(LIB_CORE) test-cli test-message-id
+# --- tests (optional) ---
+TEST_SRCS     := $(wildcard tests/*.cpp)
+TEST_BIN      := build/tests/viatext-tests
+# tests shouldn't emit dep files when compiling .cpp straight to exe
+TEST_CXXFLAGS := $(filter-out -MMD -MP,$(CXXFLAGS))
+TEST_LDFLAGS  := $(SAN_FLAGS)
 
-# Build static library
-$(LIB_CORE): $(CORE_OBJS)
-	ar rcs $@ $^
+# Allow: make test RUN='-tc="Ping*" -s'
+RUN ?=
+
+.PHONY: all clean test help
+
+# ========================
+# Main build (no tests)
+# ========================
+all: $(LIB)
+
+$(LIB): $(LIB_OBJS)
+	$(AR) $(ARFLAGS) $@ $^
 
 src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# ------------------------
-# test-cli (CLI 1)
-# ------------------------
+# ========================
+# Optional tests
+# ========================
+test: $(LIB)
+	@mkdir -p build/tests
+	$(CXX) $(TEST_CXXFLAGS) $(TEST_SRCS) $(LIB) -o $(TEST_BIN) $(TEST_LDFLAGS)
+	./$(TEST_BIN) $(RUN)
 
-TEST_CLI_SRC := tests/test-cli/main.cpp
-TEST_CLI_OBJ := $(TEST_CLI_SRC:.cpp=.o)
-TEST_CLI_BIN := tests/tcli
-
-test-cli: $(TEST_CLI_OBJ) $(LIB_CORE)
-	$(CXX) $(CXXFLAGS) -o $(TEST_CLI_BIN) $(TEST_CLI_OBJ) $(LIB_CORE)
-
-tests/test-cli/%.o: tests/test-cli/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# ------------------------
-# test-message-id (CLI 2)
-# ------------------------
-
-MSGID_SRC := tests/test-message-id/main.cpp
-MSGID_OBJ := $(MSGID_SRC:.cpp=.o)
-MSGID_BIN := tests/tmid
-
-test-message-id: $(MSGID_OBJ) $(LIB_CORE)
-	$(CXX) $(CXXFLAGS) -o $(MSGID_BIN) $(MSGID_OBJ) $(LIB_CORE)
-
-tests/test-message-id/%.o: tests/test-message-id/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# ------------------------
-# Clean
-# ------------------------
-
+# ========================
+# Utilities
+# ========================
 clean:
-	rm -f src/*.o tests/test-cli/*.o tests/test-message-id/*.o \
-	      $(LIB_CORE) tests/tcli tests/tmid
+	rm -f $(LIB) $(LIB_OBJS) $(LIB_DEPS)
+	rm -rf build
 
-.PHONY: all clean
+help:
+	@echo 'Targets:'
+	@echo '  make            Build $(LIB) (no tests)'
+	@echo '  make test       Build and run tests (requires doctest)'
+	@echo '                  Example: make test RUN="-tc=\"Ping*\" -s"'
+	@echo '  make clean      Remove build artifacts'
+
+# Auto-include header dependencies (generated by -MMD -MP)
+-include $(LIB_DEPS)

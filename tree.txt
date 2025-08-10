@@ -1,34 +1,30 @@
 .
+├── AI
+│   ├── BLUEPRINTS.md
+│   └── README.md
 ├── include
 │   └── viatext
-│       ├── arg_parser.hpp
-│       ├── BLUEPRINT.md
+│       ├── core.hpp
+│       ├── core.md
 │       ├── message.hpp
 │       ├── message_id.hpp
-│       ├── README.md
-│       └── text_fragments.hpp
-├── libviatext-core.a
+│       ├── message_id.md
+│       ├── message.md
+│       ├── package.hpp
+│       └── README.md
 ├── LICENSE
 ├── Makefile
 ├── README2.md
 ├── README.md
 ├── src
-│   ├── message.cpp
-│   ├── message_id.cpp
-│   ├── message_id.o
-│   ├── message.o
-│   ├── text_fragments.cpp
-│   └── text_fragments.o
-├── test-cli
-├── test-message-id
+│   ├── core.cpp
+│   └── message_id.cpp
 ├── tests
 │   ├── test-cli
-│   │   ├── main.cpp
-│   │   └── main.o
+│   │   └── main.cpp
 │   └── test-message-id
 │       └── main.cpp
 ├── third_party
-│   ├── ArduinoJson
 │   ├── CLI
 │   │   └── CLI11.hpp
 │   ├── etl
@@ -459,4 +455,4 @@
 ├── tree.txt
 └── viatext.png
 
-19 directories, 440 files
+20 directories, 436 files

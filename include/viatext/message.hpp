@@ -1,486 +1,317 @@
 /**
  * @file message.hpp
- * @brief ViaText Message Class — Universal Protocol Message Container for All Node Types
+ * @brief ViaText Message — unified view over routing header, metadata args, and text body.
  *
- * ---
+ * The `Message` class is a thin, ingress-agnostic wrapper that contains:
+ *   - a `MessageID`   (the 5-byte routing/flags/fragment header),
+ *   - a `Package`     (metadata arguments + expanded 0..255B text),
+ *   - parsed stamp parts: `from`, `to`, `data` (body).
  *
- * ## Overview
+ * It parses the canonical ViaText payload stamp once:
+ *     <hex10>~<from>~<to>~<data>
+ * where <hex10> is the 10-hex-character representation of the 5-byte MessageID
+ * (optionally "0x" prefix is permitted if you choose to enable it).
  *
- * The `Message` class defines the standard container for all messages
- * within the ViaText protocol. It wraps routing metadata (`MessageID`),
- * source and destination identifiers (`from`, `to`), and the payload
- * (`data`) in a single unified structure that can be used across:
+ * ### Design goals
+ * - Keep the core simple: it can call `message.sequence()`, `message.from()`,
+ *   `message.get_arg("-rssi")`, `message.text()`, etc., without managing sub-objects.
+ * - Zero dynamic allocation (ETL only), predictable footprints, beginner-friendly API.
+ * - No argument renaming or dash stripping — keys are preserved exactly.
  *
- * - LoRa-based microcontroller nodes
- * - Linux CLI and Station programs
- * - Daemon and service components
- * - Sneakernet relays or gateways
+ * ### Common construction paths
+ * - From a wrapper-provided `Package` (after reassembly): `Message m(pkg);`
+ *   The constructor parses `<hex10>~from~to~data` inside `pkg.payload`.
+ * - From scratch (internal generation): default-construct and set fields via setters,
+ *   or pass a `MessageID` plus `from/to/data` strings.
  *
- * ---
+ * ### Validity & policy
+ * - `is_valid()` indicates whether the stamp/header parsed cleanly.
+ * - The class does not perform fragmentation/reassembly; that must happen upstream.
  *
- * ## Purpose
- *
- * This class provides a **normalized interface for all message handling**.
- * Whether the message is human-authored or machine-generated, inbound or outbound,
- * fragmented or complete — this object abstracts away the low-level details and
- * presents a clean, zero-overhead interface for:
- *
- * - Core processing
- * - Validation
- * - Fragmentation logic
- * - Display and debugging
- * - Serialization to/from the wire format
- *
- * ---
- *
- * ## Microcontroller-Friendly by Design
- *
- * Like all core ViaText components, this class:
- * - ✅ Avoids all dynamic memory (heap-free)
- * - ✅ Uses ETL containers for `etl::string` and fixed-size fragments
- * - ✅ Avoids STL, exceptions, RTTI, or heavy constructs
- * - ✅ Runs identically on Linux and embedded targets (ESP32, ATmega, etc.)
- *
- * The `data` field uses a `TextFragments<8, 32>` container,
- * keeping total memory footprint around **256 bytes** for the payload
- * — just enough to carry:
- *
- * - The message header (sequence, hops, flags)
- * - The sender/recipient IDs (6 chars each)
- * - Actual user text or machine directives (`-rssi`, `-data`, etc.)
- *
- * ---
- *
- * ## Wire Format and Parsing
- *
- * Messages are often transmitted as a single delimited string:
- *
- * ```
- * <id>~<from>~<to>~<data>
- * ```
- *
- * Example:
- * ```
- * 0x4F2B000131~shrek~donkey~Shut Up
- * ```
- *
- * The `Message` class supports:
- * - `from_wire_string()` → parse raw string into structured fields
- * - `to_wire_string()`   → convert structured message to wire string
- *
- * This keeps routing and payloads compact and easy to debug.
- *
- * ---
- *
- * ## Error Codes (`error` field)
- *
- * | Code | Meaning                      |
- * |------|------------------------------|
- * | 0    | OK                           |
- * | 1    | Parse error (invalid input)  |
- * | 2    | Overflow (too large)         |
- * | 3    | Empty or uninitialized       |
- * | 4    | Fragmentation/parsing issue  |
- *
- * ---
- *
- * ## Fragmentation & State Awareness
- *
- * The class also provides:
- * - `is_fragmented()` → if this is part of a multi-part message
- * - `is_complete()`   → if all fragments have been received
- * - `is_valid()`      → for general well-formedness
- *
- * These help with intermediate routing and reassembly logic.
- *
- * ---
- *
- * ## Design Philosophy
- *
- * This class exists to **normalize communication** between all nodes, regardless of medium.
- * It encapsulates everything needed to:
- *
- * - Route messages across unreliable networks
- * - Store/forward messages in mesh-based relays
- * - Display messages clearly in terminals
- * - Avoid silent corruption or inconsistency
- *
- * ---
- *
- * ## Integration Points
- *
- * - Used directly by: `Core`, `CLI`, `LoRa wrappers`, and Station apps
- * - Built using:
- *   - `MessageID` for routing metadata
- *   - `TextFragments` for payload chunking
- * - Serializes to/from standardized wire string format
- *
- * ---
- *
- * ## Authors
+ * @authors
  * @author Leo
  * @author ChatGPT
- * @date 2025-08-07
  */
-#ifndef VIATEXT_MESSAGE_HPP
-#define VIATEXT_MESSAGE_HPP
 
+#pragma once
 #include "message_id.hpp"
-#include "text_fragments.hpp"
+#include "package.hpp"
 #include "etl/string.h"
-#include "etl/vector.h"
 #include <stdint.h>
 #include <stddef.h>
 
 namespace viatext {
 
-// These can be tuned for MCU limits.
+/// Max lengths for parsed stamp fields (conservative defaults).
+static constexpr size_t VT_FROM_MAX = 8;   ///< fits your 1..6 char callsigns with headroom
+static constexpr size_t VT_TO_MAX   = 8;   ///< same as FROM
+static constexpr size_t VT_BODY_MAX = 255; ///< body/data lives within Package::payload budget
 
-/**
- * @brief Maximum character length for the sender field (`from`).
- * 
- * Supports short, radio-style IDs like `"NODE1"` or `"HCKRmn"`.
- * This value directly sets the capacity of the `etl::string` used in `from`.
- */
-constexpr size_t FROM_LEN = 6;
+using FromStr = etl::string<VT_FROM_MAX>;
+using ToStr   = etl::string<VT_TO_MAX>;
+using BodyStr = etl::string<VT_BODY_MAX>;
 
-/**
- * @brief Maximum character length for the recipient field (`to`).
- *
- * Follows the same constraints as `FROM_LEN` to ensure compact addressing.
- * Common values: `"TX1"`, `"BASE2"`, etc.
- */
-constexpr size_t TO_LEN = 6;
-
-/**
- * @brief Maximum number of text fragments the message payload (`data`) can contain.
- *
- * Each fragment is a fixed-capacity ETL string (`FRAG_SIZE` bytes).
- * The total payload space is `DATA_FRAGS × FRAG_SIZE` bytes.
- * Default is 8 × 32 = 256 bytes — LoRa/serial-friendly.
- */
-constexpr size_t DATA_FRAGS = 8;
-
-/**
- * @brief Maximum number of characters in a single payload fragment.
- *
- * All fragments in the message share this size limit.
- * Helps enforce consistency across Linux and microcontroller nodes.
- */
-constexpr size_t FRAG_SIZE = 32;
-
-
-/**
- * @class Message
- * @brief The universal protocol message container for the ViaText communication system.
- *
- * This class encapsulates a single ViaText message, including:
- * - Routing metadata (`MessageID`)
- * - Sender and recipient identifiers (`from`, `to`)
- * - A message body, broken into fixed-size text fragments (`data`)
- *
- * Messages can originate from human users, IoT devices, scripts, or mesh-relaying nodes.
- * Regardless of source or destination, every message in the system eventually
- * conforms to this object model.
- *
- * ---
- *
- * ## Structure
- * A `Message` consists of:
- * - `id`    → A compact 5-byte binary message header (sequence, hops, flags)
- * - `from`  → Short alphanumeric node ID (e.g. `"NODE1"`)
- * - `to`    → Intended recipient node ID
- * - `data`  → Payload in 8 × 32-byte fixed fragments (`TextFragments`)
- *
- * This results in a fully MCU-safe, 256-byte payload envelope with no dynamic memory.
- *
- * ---
- *
- * ## Parsing and Serialization
- *
- * Messages can be constructed from or converted to the **wire string format**:
- *
- * ```
- * <id>~<from>~<to>~<data>
- * ```
- *
- * Example:
- * ```
- * 0x4F2B000131~shrek~donkey~Shut Up
- * ```
- *
- * This enables compatibility across:
- * - LoRa and serial interfaces
- * - Linux CLI input/output
- * - File-based sneakernet transfers
- *
- * ---
- *
- * ## Embedded-Safe Design
- * The class uses only:
- * - `etl::string` (bounded, stack-safe)
- * - `TextFragments` (fragmented text buffer)
- * - No heap allocation
- * - No STL or dynamic containers
- *
- * This makes it safe to use in constrained environments like:
- * - ESP32 (LoRa)
- * - Arduino Mega / ATmega
- * - Linux daemons and shells
- *
- * ---
- *
- * ## Utility Methods
- * - `is_valid()`       → Checks parse success and structural integrity
- * - `is_fragmented()`  → Returns true if `id.total > 1`
- * - `is_complete()`    → True if all expected fragments are present
- * - `to_wire_string()` → Serialize into a single `~`-delimited output
- * - `from_wire_string()` → Populate from a `const char*` wire string
- * - `to_string()`      → Debug-friendly printable version
- *
- * ---
- *
- * ## Use Cases
- * - Message routing and forwarding
- * - User message display
- * - Command transport (`-set_id`, `-ack`, etc.)
- * - LoRa-to-Linux translation
- * - Mesh storage and persistence
- *
- * ---
- *
- * @note All fields are public for zero-cost access in tight loops and device code.
- * @note This class forms the canonical “message envelope” in the ViaText protocol.
- */
+/// Result codes for constructing / parsing a Message.
+enum class MessageStatus : uint8_t {
+  Ok = 0,
+  TooShort,
+  MissingTildes,
+  BadHeaderHex,
+  HeaderPolicy,   // e.g., invalid hops/flags/part/total ranges
+  Overflow,       // assembled payload would exceed 255
+};
 
 class Message {
 public:
-    // --- Fields (all public for zero-overhead struct-style use) ---
+  // -------- Constructors --------
 
-    /**
-     * @brief The compact 5-byte routing and fragmentation header for this message.
-     *
-     * Includes sequence number, part number, total parts, hop count, and delivery flags.
-     * Used to track message delivery, deduplication, and multi-part reassembly.
-     */
-    MessageID id;
+  /// Default: empty message, invalid until fields are set.
+  Message()
+  : status_(MessageStatus::TooShort) {
+    // leave id_ zeroed by default ctor; pkg_.payload empty
+  }
 
-    /**
-     * @brief Sender node ID (max 6 characters).
-     *
-     * This identifies the origin of the message.
-     * Format must match ViaText callsign rules: A–Z, 0–9, `_`, `-`.
-     */
-    etl::string<FROM_LEN> from;
+  /// Build from a Package. Parses pkg.payload as "<hex10>~from~to~data".
+  explicit Message(const Package& pkg)
+  : pkg_(pkg) {
+    status_ = parse_from_payload_stamp();
+  }
 
-    /**
-     * @brief Recipient node ID (max 6 characters).
-     *
-     * This is the intended final destination of the message.
-     * Nodes may still relay the message even if not addressed to them.
-     */
-    etl::string<TO_LEN> to;
+  /// Build from Package + explicit MessageID (skips hex extraction for id).
+  Message(const Package& pkg, const MessageID& id)
+  : id_(id), pkg_(pkg) {
+    status_ = parse_from_payload_after_header_known();
+  }
 
-    /**
-     * @brief The message payload, split into fixed-size text fragments.
-     *
-     * Typically holds plain-text message body or machine arguments (e.g., `-rssi 92 -data hello`).
-     * Each fragment is `FRAG_SIZE` bytes, with up to `DATA_FRAGS` total.
-     * Fragmentation ensures compatibility with LoRa and serial limits.
-     */
-    TextFragments<DATA_FRAGS, FRAG_SIZE> data;
+  /// Build from components (internal generation path).
+  Message(const MessageID& id, const char* from, const char* to, const char* data)
+  : id_(id) {
+    set_from(from);
+    set_to(to);
+    set_text(data);
+    // payload is not auto-built; caller can retrieve to_payload_stamp()
+    status_ = MessageStatus::Ok;
+  }
 
+  // -------- Status / validity --------
 
-    /**
-     * @brief Error state for this message instance.
-     *
-     * Used to detect issues during construction, parsing, or payload fragmentation.
-     *
-     * | Code | Meaning                          |
-     * |------|----------------------------------|
-     * | 0    | OK (no error)                    |
-     * | 1    | Parse error (invalid wire format)|
-     * | 2    | Overflow (data exceeds limits)   |
-     * | 3    | Empty message or uninitialized   |
-     * | 4    | Fragmentation or decode failure  |
-     */
-    uint8_t error = 0;
+  /// True if the header and stamp fields parsed cleanly (Ok).
+  bool is_valid() const { return status_ == MessageStatus::Ok; }
 
+  /// Detailed status for logging/tests.
+  MessageStatus status() const { return status_; }
 
-    // --- Constructors ---
+  // -------- Getters for routing header (MessageID) --------
 
-    /**
-     * @brief Default constructor.
-     *
-     * Creates an empty message with no fields set.
-     * The `error` flag will be `3` (empty) until fields are assigned manually.
-     */
-    Message();
+  uint16_t sequence()   const { return id_.sequence; }
+  uint8_t  part()       const { return id_.part; }
+  uint8_t  total()      const { return id_.total; }
+  uint8_t  hops()       const { return static_cast<uint8_t>(id_.hops & 0x0F); }
+  uint8_t  flags()      const { return static_cast<uint8_t>(id_.flags & 0x0F); }
 
-    /**
-     * @brief Construct a message from raw components.
-     *
-     * Initializes a message using a known `MessageID`, sender (`from_`), recipient (`to_`),
-     * and message body (`data_`).
-     *
-     * This is commonly used when constructing a message for transmission.
-     *
-     * @param id_    Pre-built MessageID struct.
-     * @param from_  Sender node ID string.
-     * @param to_    Recipient node ID string.
-     * @param data_  Raw payload string to be split into fragments.
-     */
-    Message(const MessageID& id_, const char* from_, const char* to_, const char* data_);
+  bool requests_ack()   const { return id_.requests_acknowledgment(); }
+  bool is_ack()         const { return id_.is_acknowledgment(); }
+  bool is_encrypted()   const { return id_.is_encrypted(); }
 
-    /**
-     * @brief Construct a message by parsing a wire-formatted string.
-     *
-     * Expected input format: `<id>~<from>~<to>~<data>`.
-     * If parsing fails, the `error` field will be set accordingly.
-     *
-     * @param wire_str Null-terminated string in ViaText wire format.
-     */
-    Message(const char* wire_str);
+  // -------- Setters for routing header --------
 
+  void set_sequence(uint16_t s) { id_.sequence = s; }
+  void set_part(uint8_t p)      { id_.part = p; }
+  void set_total(uint8_t t)     { id_.total = t; }
+  void set_hops(uint8_t h)      { id_.hops = (h & 0x0F); }
+  void set_flags(uint8_t f)     { id_.flags = (f & 0x0F); }
 
-    // --- Field setters ---
+  void set_request_ack(bool on) { id_.set_request_acknowledgment(on); }
+  void set_is_ack(bool on)      { id_.set_is_acknowledgment(on); }
+  void set_is_encrypted(bool on){ id_.set_is_encrypted(on); }
 
-    /**
-     * @brief Set the message ID (sequence, part, hops, flags).
-     * @param id_ A preconstructed MessageID struct.
-     */
-    void set_id(const MessageID& id_);
+  /// Increment hops (with nibble clamp).
+  void bump_hops() { set_hops(static_cast<uint8_t>((id_.hops + 1) & 0x0F)); }
 
-    /**
-     * @brief Set the sender node ID.
-     * @param from_ A null-terminated string (max 6 chars).
-     */
-    void set_from(const char* from_);
+  // -------- Getters for args (delegated to Package) --------
 
-    /**
-     * @brief Set the recipient node ID.
-     * @param to_ A null-terminated string (max 6 chars).
-     */
-    void set_to(const char* to_);
+  bool has_arg(const char* key) const { return pkg_.args.has(key); }
+  const ValStr* get_arg(const char* key) const { return pkg_.args.get(key); }
+  bool flag(const char* key) const { return pkg_.flag(key); }
 
-    /**
-     * @brief Set the message payload.
-     *
-     * The input string is split into fragments using `TextFragments<8, 32>`.
-     * If the payload exceeds available space, the `error` field will be set.
-     *
-     * @param data_ A null-terminated message string (typically under 256 bytes).
-     */
-    void set_data(const char* data_);
+  // -------- Setters for args (delegated) --------
 
-    /**
-     * @brief Reset all fields to their default (empty) state.
-     *
-     * Clears `id`, `from`, `to`, `data`, and resets the `error` code to 3 (empty).
-     */
-    void clear();
+  bool set_arg(const char* key, const char* val) { return pkg_.args.set(key, val); }
+  bool set_flag(const char* key)                 { return pkg_.args.set_flag(key); }
+  bool remove_arg(const char* key)               { return pkg_.args.remove(key); }
 
+  // -------- Getters for parsed stamp parts --------
 
-    // --- Field getters ---
+  const FromStr& from() const { return from_; }
+  const ToStr&   to()   const { return to_; }
+  const BodyStr& text() const { return data_; }   // "data" a.k.a. message body
 
-    /**
-     * @brief Get the message ID (routing header).
-     * @return Reference to the `MessageID` struct.
-     */
-    const MessageID& get_id() const;
+  // -------- Setters for stamp parts --------
 
-    /**
-     * @brief Get the sender node ID.
-     * @return Reference to the ETL string containing the `from` field.
-     */
-    const etl::string<FROM_LEN>& get_from() const;
+  void set_from(const char* s) { assign_trim(from_, s); }
+  void set_to(const char* s)   { assign_trim(to_,   s); }
+  void set_text(const char* s) { assign_trim(data_, s); }
 
-    /**
-     * @brief Get the recipient node ID.
-     * @return Reference to the ETL string containing the `to` field.
-     */
-    const etl::string<TO_LEN>& get_to() const;
+  // -------- Package access (rarely needed by the core) --------
 
-    /**
-     * @brief Get the payload fragments.
-     * @return Reference to the `TextFragments` container holding the message body.
-     */
-    const TextFragments<DATA_FRAGS, FRAG_SIZE>& get_data() const;
+  const Package& package() const { return pkg_; }
+  Package&       package()       { return pkg_; }
 
+  // -------- Assembly helpers --------
 
-    // --- Serialization ---
+  /**
+   * @brief Assemble "<hex10>~from~to~data" into `out`.
+   * @return MessageStatus::Ok on success; Overflow if >255 bytes.
+   */
+  MessageStatus to_payload_stamp(Text255& out) const {
+    // hex string from id (10 chars)
+    etl::string<11> hex = id_.to_hex_string(); // 10 chars
+    // compute total length conservatively and check
+    size_t total_len = hex.size() + 1 + from_.size() + 1 + to_.size() + 1 + data_.size();
+    if (total_len > out.max_size()) return MessageStatus::Overflow;
 
-    /**
-     * @brief Convert this message into a wire-format string.
-     *
-     * Output format: `<id>~<from>~<to>~<data>`, where all fields are text.
-     * The `data` field is serialized as a single string by joining fragments.
-     *
-     * @param out     Destination character buffer.
-     * @param max_len Maximum number of bytes to write (including null terminator).
-     */
-    void to_wire_string(char* out, size_t max_len) const;
+    out.clear();
+    out += hex;
+    out += '~';
+    out += from_;
+    out += '~';
+    out += to_;
+    out += '~';
+    out += data_;
+    return MessageStatus::Ok;
+  }
 
-    /**
-     * @brief Populate this message from a wire-format string.
-     *
-     * Input format must follow: `<id>~<from>~<to>~<data>`.
-     * On success, returns `true` and sets all fields.  
-     * On failure, sets `error` and returns `false`.
-     *
-     * @param wire_str Null-terminated input string.
-     * @return `true` if parsing succeeded; `false` otherwise.
-     */
-    bool from_wire_string(const char* wire_str);
+  /// Convenience: return a transient assembled string (copy).
+  Text255 to_payload_stamp_copy() const {
+    Text255 out;
+    (void)to_payload_stamp(out);
+    return out;
+  }
 
+private:
+  MessageID  id_{};
+  Package    pkg_{};
+  FromStr    from_{};
+  ToStr      to_{};
+  BodyStr    data_{};
+  MessageStatus status_{MessageStatus::TooShort};
 
-    // --- Validity, fragmentation, and flags ---
+  // --- Parsing helpers ---
 
-    /**
-     * @brief Check if the message is structurally valid.
-     *
-     * Returns `true` if all required fields are present and `error == 0`.
-     * A valid message has a populated ID, sender, recipient, and data fragments.
-     *
-     * @return `true` if the message is well-formed.
-     */
-    bool is_valid() const;
+  static inline bool is_hex_char(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'A' && c <= 'F') ||
+           (c >= 'a' && c <= 'f');
+  }
 
-    /**
-     * @brief Check if this message is part of a multi-part transmission.
-     *
-     * A message is considered fragmented if `id.total > 1`.
-     * Used to determine whether additional fragments are expected.
-     *
-     * @return `true` if this is a fragmented message.
-     */
-    bool is_fragmented() const;
+    template <size_t N>
+    static void assign_trim(etl::string<N>& dst, const char* src) {
+        dst.clear();
+        if (!src) return;
+        // trim leading/trailing spaces/tabs (simple + deterministic)
+        const char* s = src;
+        while (*s == ' ' || *s == '\t') ++s;
+        const char* e = s;
+        while (*e) ++e;
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t')) --e;
+        for (const char* p = s; p < e && dst.size() < dst.max_size(); ++p) dst += *p;
+    }
 
-    /**
-     * @brief Check if all fragments for this message have been received.
-     *
-     * Returns `true` if the current part index is less than total parts
-     * and the `data` field appears complete.
-     *
-     * @return `true` if the message is complete and ready for processing.
-     */
-    bool is_complete() const;
+  /**
+   * @brief Parse pkg_.payload as "<hex10>~from~to~data" and fill id_/from_/to_/data_.
+   * Expects a reassembled logical payload (no fragments). Accepts uppercase/lowercase hex.
+   */
+  MessageStatus parse_from_payload_stamp() {
+    const Text255& pl = pkg_.payload;
+    if (pl.empty()) return MessageStatus::TooShort;
 
-    // --- Debugging/inspection ---
+    // token 0: hex id (10 chars) possibly prefixed by "0x"
+    size_t i = 0;
+    if (pl.size() >= 2 && pl[0] == '0' && (pl[1] == 'x' || pl[1] == 'X')) {
+    i = 2; // skip "0x"
+    }
 
-    /**
-     * @brief Generate a human-readable representation of the message.
-     *
-     * Similar to `to_wire_string()`, but may include formatting or truncation
-     * to aid with debugging, logs, or terminal display.
-     *
-     * @param out     Destination buffer for formatted string.
-     * @param max_len Maximum size of the output buffer.
-     */
-    void to_string(char* out, size_t max_len) const;
+    // read up to '~' as id token
+    etl::string<12> idtok; // up to "0x"+10, but we'll store the 10 hex for conversion
+    for (; i < pl.size(); ++i) {
+      if (pl[i] == '~') break;
+      if (idtok.size() < idtok.max_size()) idtok += pl[i];
+    }
+    if (i >= pl.size() || pl[i] != '~') return MessageStatus::MissingTildes;
 
+    // normalize: if it still has "0x", strip it
+    const char* idc = idtok.c_str();
+    if ((idtok.size() >= 2) && idc[0] == '0' && (idc[1] == 'x' || idc[1] == 'X')) {
+      // shift left by 2 — or simply advance pointer below without modifying string
+      idc += 2;
+    }
+
+    // Expect exactly 10 hex chars
+    size_t hexlen = 0;
+    while (idc[hexlen]) ++hexlen;
+    if (hexlen != 10) return MessageStatus::BadHeaderHex;
+    for (size_t k = 0; k < 10; ++k) if (!is_hex_char(idc[k])) return MessageStatus::BadHeaderHex;
+
+    // Build id_ from hex
+    id_ = MessageID(idc);
+
+    // Parse from / to / data (split next two '~', rest is body)
+    size_t pos = i + 1;
+    // FROM
+    FromStr f; while (pos < pl.size() && pl[pos] != '~' && f.size() < f.max_size()) { f += pl[pos++]; }
+    if (pos >= pl.size() || pl[pos] != '~') return MessageStatus::MissingTildes;
+    ++pos;
+    // TO
+    ToStr t; while (pos < pl.size() && pl[pos] != '~' && t.size() < t.max_size()) { t += pl[pos++]; }
+    if (pos > pl.size()) return MessageStatus::MissingTildes;
+    // DATA (may be empty; may include '~' beyond the third delimiter — keep rest)
+    BodyStr b;
+    if (pos < pl.size() && pl[pos] == '~') ++pos;
+    while (pos < pl.size() && b.size() < b.max_size()) { b += pl[pos++]; }
+
+    from_ = f;
+    to_   = t;
+    data_ = b;
+
+    // basic nibble guards (policy-friendly, non-fatal if you prefer)
+    id_.hops  &= 0x0F;
+    id_.flags &= 0x0F;
+
+    // minimal header sanity
+    if (id_.total == 0 || id_.part >= id_.total) return MessageStatus::HeaderPolicy;
+
+    return MessageStatus::Ok;
+  }
+
+  /// Variant used when id_ is already known; parses only "~from~to~data".
+  MessageStatus parse_from_payload_after_header_known() {
+    const Text255& pl = pkg_.payload;
+    if (pl.empty()) return MessageStatus::TooShort;
+
+    // Find first '~' (end of header token we won't validate here)
+    size_t i = 0;
+    while (i < pl.size() && pl[i] != '~') ++i;
+    if (i >= pl.size()) return MessageStatus::MissingTildes;
+
+    size_t pos = i + 1;
+    // FROM
+    FromStr f; while (pos < pl.size() && pl[pos] != '~' && f.size() < f.max_size()) { f += pl[pos++]; }
+    if (pos >= pl.size() || pl[pos] != '~') return MessageStatus::MissingTildes;
+    ++pos;
+    // TO
+    ToStr t; while (pos < pl.size() && pl[pos] != '~' && t.size() < t.max_size()) { t += pl[pos++]; }
+    if (pos > pl.size()) return MessageStatus::MissingTildes;
+    // DATA
+    BodyStr b; if (pos < pl.size() && pl[pos] == '~') ++pos;
+    while (pos < pl.size() && b.size() < b.max_size()) { b += pl[pos++]; }
+
+    from_ = f; to_ = t; data_ = b;
+    id_.hops  &= 0x0F;
+    id_.flags &= 0x0F;
+    if (id_.total == 0 || id_.part >= id_.total) return MessageStatus::HeaderPolicy;
+
+    return MessageStatus::Ok;
+  }
 };
 
 } // namespace viatext
-
-#endif // VIATEXT_MESSAGE_HPP

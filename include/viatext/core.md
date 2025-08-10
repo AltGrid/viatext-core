@@ -1,167 +1,341 @@
-# core.BLUEPRINT.md
-
 MODULE ViaTextCore
 
   ## DOC
-  ## @description: Main protocol event loop and message state for ViaText mesh core. All logic is statically defined, heap-free, and AI/MCU safe.
-  ## @integration: Built atop Message, ArgParser, TextFragments, uses only blueprint-defined types.
-  ## @author: Leo, ChatGPT
+  ## @description: Minimal ViaText node core — accepts Package, exposes Message, emits Package.
+  ##               Keeps node identity, runs a tick->process loop, and handles a few commands.
+  ##               Transport, routing, and full reassembly policy are deferred to later versions.
+  ## @notes: No ArgParser. Keys in Package.args are preserved exactly as provided ("-m", "--ttl", etc.).
+  IMPORT Package
+  IMPORT Message
+  IMPORT MessageID
 
-  # --- State Type (uses blueprint canonical types)
+  # ---------- Types ----------
 
   TYPE CoreState {
-    node_id: String,
+    node_id: String,             # callsign owned by this node
     tick_count: Number,
-    uptime: Number,
-    last_timestamp: Number,
-    inbox: List<String>,                # raw incoming arg strings
-    outbox: List<String>,               # raw outgoing arg strings
-    received_message_ids: List<Number>  # MessageID.sequence, prevents dupes
+    uptime_ms: Number,
+    last_ms: Number,
+
+    inbox: List<Package>,        # inbound from wrappers
+    outbox: List<Package>,       # outbound to wrappers
+
+    recent_sequences: List<Number>,   # small ring for dedupe of complete messages
+    recent_sequences_cap: Number,     # e.g., 64
+
+    # Fragment scaffolding (defined, not fully used yet)
+    frag_cap: Number,                 # policy cap for total parts (e.g., 8)
+    inflight_cap: Number,             # max sequences tracked (e.g., 4)
+
+    # Placeholder for future fragment tracking (not active in MVP)
+    inflight_fragments: List<Object>  # reserved; structure defined below but not enforced
   } END TYPE
 
+  TYPE InflightFragment {
+    sequence: Number,                 # MessageID.sequence
+    total: Number,                    # expected parts
+    received_count: Number,
+    received_bitmap: Number,          # bitmask if total <= 8; else future use
+    parts: List<String>,              # holds raw fragment payload slices (order by part)
+    first_seen_ms: Number,
+    basis_args: Object                # Package.args from first seen fragment (future use)
+  } END TYPE
+
+  # ---------- Lifecycle API (wrappers call these) ----------
+
   ## DOC
-  ## @description: Initialize state with optional node_id (default empty).
-  DEFINE init(optional_node_id: String): CoreState
+  ## @description: Initialize core with node_id and small policy caps.
+  DEFINE init(node_id: String): CoreState
     SET state: CoreState = CoreState()
-    state.node_id = optional_node_id
+    state.node_id = node_id
     state.tick_count = 0
-    state.uptime = 0
-    state.last_timestamp = 0
+    state.uptime_ms = 0
+    state.last_ms = 0
+
     state.inbox = List()
     state.outbox = List()
-    state.received_message_ids = List()
+
+    state.recent_sequences = List()
+    state.recent_sequences_cap = 64
+
+    state.frag_cap = 8
+    state.inflight_cap = 4
+    state.inflight_fragments = List()
+
     RETURN state
   END DEFINE
 
   ## DOC
-  ## @description: Queue inbound message (raw arg string).
-  DEFINE add_message(state: CoreState, arg_string: String): Void
-    CALL ListAppend(state.inbox, arg_string)
+  ## @description: Enqueue an inbound Package from any wrapper (LoRa, Linux, Serial).
+  ## @return: Boolean — true if enqueued, false if queue is full (future policy).
+  DEFINE add_message(state: CoreState, pkg: Package): Boolean
+    CALL ListAppend(state.inbox, pkg)
+    RETURN true
   END DEFINE
 
   ## DOC
-  ## @description: Main tick: update time, call process().
-  DEFINE tick(state: CoreState, current_timestamp: Number): Void
-    IF state.last_timestamp == 0
-      state.last_timestamp = current_timestamp
+  ## @description: Advance time; process at most one inbound item.
+  DEFINE tick(state: CoreState, now_ms: Number): Void
+    IF state.last_ms == 0
+      state.last_ms = now_ms
     END IF
-    state.uptime = state.uptime + (current_timestamp - state.last_timestamp)
-    state.last_timestamp = current_timestamp
+    SET delta: Number = now_ms - state.last_ms
+    state.uptime_ms = state.uptime_ms + delta
+    state.last_ms = now_ms
     state.tick_count = state.tick_count + 1
-    CALL process(state)
+
+    CALL process_one(state, now_ms)
   END DEFINE
 
   ## DOC
-  ## @description: Process one message from inbox if present.
-  DEFINE process(state: CoreState): Void
+  ## @description: Dequeue next outbound Package for the wrapper to transmit/handle.
+  ## @return: Package | NULL
+  DEFINE get_message(state: CoreState): Package | NULL
+    IF CALL ListIsEmpty(state.outbox)
+      RETURN NULL
+    END IF
+    SET out_pkg: Package = CALL ListPopFront(state.outbox)
+    RETURN out_pkg
+  END DEFINE
+
+  ## DOC
+  ## @description: Update node identity.
+  DEFINE set_node_id(state: CoreState, node_id: String): Void
+    state.node_id = node_id
+  END DEFINE
+
+  ## DOC
+  ## @description: Read node identity.
+  ## @return: String
+  DEFINE get_node_id(state: CoreState): String
+    RETURN state.node_id
+  END DEFINE
+
+  # ---------- Internal processing ----------
+
+  ## DOC
+  ## @description: Pop one Package, try to form a Message, and dispatch if complete.
+  DEFINE process_one(state: CoreState, now_ms: Number): Void
     IF CALL ListIsEmpty(state.inbox)
       RETURN
     END IF
 
-    # Step 1: Get next message (raw string)
-    SET arg_string: String = CALL ListPopFront(state.inbox)
-    # Step 2: Parse into canonical ArgParser
-    SET parser: ArgParser = ArgParser.from_string(arg_string)
-    SET msg_type: String = parser.directive    # Blueprint: parser.directive holds first token
+    SET in_pkg: Package = CALL ListPopFront(state.inbox)
 
-    MATCH msg_type
-      CASE "-m"
-        CALL handle_message(state, parser)
-      CASE "-p"
-        CALL handle_ping(state, parser)
-      CASE "-mr"
-        CALL handle_mesh_report(state, parser)
-      CASE "-ack"
-        CALL handle_acknowledge(state, parser)
-      CASE "-save"
-        CALL handle_save(state, parser)
-      CASE "-load"
-        CALL handle_load(state, parser)
-      CASE "-get_time"
-        CALL handle_get_time(state, parser)
-      CASE "-set_time"
-        CALL handle_set_time(state, parser)
-      CASE "-id"
-        CALL set_node_id(state, parser.get_argument("-id"))
-      DEFAULT
-        # Unknown or unhandled directive; drop or log
-    END MATCH
-  END DEFINE
+    # Build a Message from this Package (stamp "<hex10>~from~to~data" inside payload).
+    SET msg: Message = Message(in_pkg)
 
-  ## DOC
-  ## @description: Handler for standard -m message; dedup, ack, and route.
-  DEFINE handle_message(state: CoreState, parser: ArgParser): Void
-    SET wire_str: String = parser.get_argument("-data")
-    SET message: Message = Message.from_wire_string(wire_str)
-    IF CALL ListContains(state.received_message_ids, message.id.sequence)
+    IF NOT CALL msg.is_valid()
+      # For MVP: drop invalid messages silently (future: log to outbox as diagnostic).
       RETURN
     END IF
-    CALL ListAppend(state.received_message_ids, message.id.sequence)
-    IF message.to == state.node_id
-      IF message.id.requests_acknowledgment()
-        SET ack_args: String = CALL build_ack_args(state, message)
-        CALL ListAppend(state.outbox, ack_args)
+
+    # Basic dedupe for complete messages (by sequence). Future: include sender key if needed.
+    IF CALL contains_sequence(state.recent_sequences, msg.sequence())
+      RETURN
+    END IF
+
+    # Fragment handling policy (MVP):
+    # Keep fragments "as-is" for future reassembly; do not dispatch until complete.
+    IF msg.total() > 1
+      CALL store_fragment_stub(state, msg, now_ms)   # placeholder, minimal bookkeeping only
+      RETURN
+    END IF
+
+    # At this point, message is logically complete (1 of 1). Dispatch by args.
+    CALL ListAppend(state.recent_sequences, msg.sequence())
+    CALL trim_recent_sequences(state)
+
+    CALL dispatch(state, msg)
+  END DEFINE
+
+  ## DOC
+  ## @description: Route to minimal built-in handlers based on Package.args flags.
+  DEFINE dispatch(state: CoreState, msg: Message): Void
+    # Order is explicit; only one branch runs in MVP.
+    IF CALL msg.flag("-m")
+      CALL handle_message(state, msg)
+      RETURN
+    END IF
+
+    IF CALL msg.flag("-p")
+      CALL handle_ping(state, msg)
+      RETURN
+    END IF
+
+    IF CALL msg.flag("-ack")
+      CALL handle_ack(state, msg)
+      RETURN
+    END IF
+
+    IF CALL msg.flag("--set-id")
+      CALL handle_set_id(state, msg)
+      RETURN
+    END IF
+
+    # Unknown directive: ignore in MVP (future: emit "-unknown" event)
+  END DEFINE
+
+  # ---------- Minimal handlers (hard-coded for MVP) ----------
+
+  ## DOC
+  ## @description: Standard message delivery. If addressed to this node, emit delivered + optional ACK.
+  DEFINE handle_message(state: CoreState, msg: Message): Void
+    IF CALL msg.to() == state.node_id
+      IF CALL msg.requests_ack()
+        SET ack_pkg: Package = CALL make_ack_package(state, msg)
+        CALL ListAppend(state.outbox, ack_pkg)
       END IF
-      SET delivered_args: String = CALL build_received_args(state, message)
-      CALL ListAppend(state.outbox, delivered_args)
+
+      SET delivered_pkg: Package = CALL make_delivered_package(state, msg)
+      CALL ListAppend(state.outbox, delivered_pkg)
+    ELSE
+      # Not addressed to this node — forwarding is wrapper policy; core stays silent.
     END IF
-    # Not for us: forwarding/mesh logic handled by wrapper
   END DEFINE
 
   ## DOC
-  ## @description: Handler for ping (-p); respond with -pong.
-  DEFINE handle_ping(state: CoreState, parser: ArgParser): Void
-    SET reply_args: String = StringConcat("-pong -from ", state.node_id)
-    CALL ListAppend(state.outbox, reply_args)
+  ## @description: Respond to ping with pong.
+  DEFINE handle_ping(state: CoreState, msg: Message): Void
+    SET pong_pkg: Package = CALL make_pong_package(state, msg)
+    CALL ListAppend(state.outbox, pong_pkg)
   END DEFINE
 
   ## DOC
-  ## @description: Handler for mesh report (-mr).
-  DEFINE handle_mesh_report(state: CoreState, parser: ArgParser): Void
-    SET mesh_args: String = StringConcat("-mr -from ", state.node_id, " -neigh_count ", get_neighbor_count(state))
-    CALL ListAppend(state.outbox, mesh_args)
+  ## @description: Acknowledgment received — pass through as an event in MVP.
+  DEFINE handle_ack(state: CoreState, msg: Message): Void
+    # Future: correlate with pending deliveries. MVP: surface event for wrappers/UI.
+    SET evt: Package = CALL make_ack_event_package(state, msg)
+    CALL ListAppend(state.outbox, evt)
   END DEFINE
 
   ## DOC
-  ## @description: Handler for ack (-ack); update state or trigger app event.
-  DEFINE handle_acknowledge(state: CoreState, parser: ArgParser): Void
-    SET ack_id: String = parser.get_argument("-msg_id")
-    # App/wrapper decides display, removal, or persistence of ACKs
-  END DEFINE
-
-  ## DOC
-  ## @description: Utility: set node ID.
-  DEFINE set_node_id(state: CoreState, new_id: String): Void
-    state.node_id = new_id
-  END DEFINE
-
-  ## DOC
-  ## @description: Retrieve next outbound message if any.
-  DEFINE get_message(state: CoreState): String
-    IF CALL ListIsEmpty(state.outbox)
-      RETURN ""
+  ## @description: Set node ID (trusted contexts only).
+  DEFINE handle_set_id(state: CoreState, msg: Message): Void
+    # Read target id from message text or args; MVP: use msg.text() as new id.
+    SET new_id: String = CALL msg.text()
+    IF new_id != ""
+      state.node_id = new_id
+      SET conf: Package = CALL make_id_set_event(state, new_id)
+      CALL ListAppend(state.outbox, conf)
     END IF
-    RETURN CALL ListPopFront(state.outbox)
+  END DEFINE
+
+  # ---------- Helpers: recent-seq ring & fragment stubs ----------
+
+  ## DOC
+  ## @description: Return true if seq is found in recent_sequences.
+  ## @return: Boolean
+  DEFINE contains_sequence(buf: List<Number>, seq: Number): Boolean
+    FOR EACH x IN buf
+      IF x == seq
+        RETURN true
+      END IF
+    END FOR
+    RETURN false
   END DEFINE
 
   ## DOC
-  ## @description: Build raw arg string for ACK reply.
-  DEFINE build_ack_args(state: CoreState, message: Message): String
-    RETURN StringConcat("-ack -from ", state.node_id, " -to ", message.from, " -msg_id ", message.id.sequence)
+  ## @description: Keep recent_sequences within cap (drop oldest first).
+  DEFINE trim_recent_sequences(state: CoreState): Void
+    WHILE CALL ListSize(state.recent_sequences) > state.recent_sequences_cap
+      CALL ListPopFront(state.recent_sequences)
+    END WHILE
   END DEFINE
 
   ## DOC
-  ## @description: Build raw arg string for "received" reply.
-  DEFINE build_received_args(state: CoreState, message: Message): String
-    RETURN StringConcat("-r -from ", message.from, " -data ", message.to_wire_string())
+  ## @description: Placeholder: store fragment metadata for future reassembly (no dispatch).
+  DEFINE store_fragment_stub(state: CoreState, msg: Message, now_ms: Number): Void
+    # MVP does not assemble; simply note that a fragment was seen.
+    # Future: upsert entry keyed by msg.sequence(), set bit for msg.part(), store msg.pkg.payload slice.
+    # No output emitted here.
+    RETURN
+  END DEFINE
+
+  # ---------- Package builders (sensible outputs) ----------
+
+  ## DOC
+  ## @description: Build an ACK reply for a delivered message.
+  ## @return: Package
+  DEFINE make_ack_package(state: CoreState, msg: Message): Package
+    # Compose a new Message that mirrors the sequence and sets ACK flag.
+    SET id: MessageID = MessageID(msg.sequence(), 0, 1, msg.hops(), /*flags set via msg setters later*/ 0)
+    CALL id.set_is_acknowledgment(true)
+    CALL id.set_request_ack(false)
+
+    # Swap from/to and set body "ACK"
+    SET out_msg: Message = Message(id, state.node_id, CALL msg.from(), "ACK")
+
+    # Build outbound Package with directive flag "-ack"
+    SET out_pkg: Package = Package()
+    SET stamp: String = CALL out_msg.to_payload_stamp_copy()
+    out_pkg.payload = stamp
+    CALL out_pkg.args.set_flag("-ack")
+    CALL out_pkg.args.set("--to", CALL msg.from())
+    CALL out_pkg.args.set("--from", state.node_id)
+    RETURN out_pkg
   END DEFINE
 
   ## DOC
-  ## @description: Get neighbor count (stub).
-  DEFINE get_neighbor_count(state: CoreState): Number
-    RETURN 0
+  ## @description: Build a delivered event for local consumption.
+  ## @return: Package
+  DEFINE make_delivered_package(state: CoreState, msg: Message): Package
+    SET out_pkg: Package = Package()
+    # Echo the original payload for simplicity.
+    out_pkg.payload = CALL msg.to_payload_stamp_copy()
+    CALL out_pkg.args.set_flag("-r")                 # received
+    CALL out_pkg.args.set("--to", state.node_id)
+    CALL out_pkg.args.set("--from", CALL msg.from())
+    RETURN out_pkg
   END DEFINE
 
-  # (Handlers for save/load/get_time/set_time can be customized as needed.)
+  ## DOC
+  ## @description: Build a PONG reply to a PING.
+  ## @return: Package
+  DEFINE make_pong_package(state: CoreState, msg: Message): Package
+    # Reuse sequence (policy choice for MVP).
+    SET id: MessageID = MessageID(msg.sequence(), 0, 1, msg.hops(), msg.flags())
+    SET out_msg: Message = Message(id, state.node_id, CALL msg.from(), "PONG")
+
+    SET out_pkg: Package = Package()
+    out_pkg.payload = CALL out_msg.to_payload_stamp_copy()
+    CALL out_pkg.args.set_flag("-pong")
+    CALL out_pkg.args.set("--to", CALL msg.from())
+    CALL out_pkg.args.set("--from", state.node_id)
+    RETURN out_pkg
+  END DEFINE
+
+  ## DOC
+  ## @description: Surface an ACK event as a simple package (UI/log).
+  ## @return: Package
+  DEFINE make_ack_event_package(state: CoreState, msg: Message): Package
+    SET evt: Package = Package()
+    # Minimal stamp echo; could be "EVENT~ACK~from~to" later.
+    evt.payload = CALL msg.to_payload_stamp_copy()
+    CALL evt.args.set_flag("-ack_event")
+    CALL evt.args.set("--seq", CALL to_string_number(msg.sequence()))
+    RETURN evt
+  END DEFINE
+
+  ## DOC
+  ## @description: Confirm node id change.
+  ## @return: Package
+  DEFINE make_id_set_event(state: CoreState, new_id: String): Package
+    SET evt: Package = Package()
+    evt.payload = "ID_SET~" + new_id
+    CALL evt.args.set_flag("-id_set")
+    CALL evt.args.set("--node", new_id)
+    RETURN evt
+  END DEFINE
+
+  # ---------- Utilities ----------
+
+  ## DOC
+  ## @description: Convert Number to String (placeholder for platform utility).
+  ## @return: String
+  DEFINE to_string_number(n: Number): String
+    # Host will provide; included for clarity in pseudocode.
+    RETURN "0" + ""  # placeholder
+  END DEFINE
 
 END MODULE
