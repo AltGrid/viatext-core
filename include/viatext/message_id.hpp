@@ -1,4 +1,5 @@
 /**
+ * @page vt-core_message_id ViaText MessageID
  * @file message_id.hpp
  * @brief ViaText MessageID — Compact 5-byte routing header for resilient mesh delivery.
  *

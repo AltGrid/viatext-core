@@ -1,500 +1,180 @@
 # ViaText Core Module
 
-The following is an extremely basic concept of ViaText protocol and core function. It is enough to present a general understanding of the system.
-
-
-
-## ViaText Core Overview / Concept
-
-The **Core** is the central message handler within the ViaText network. It logs received messages, queues messages for outbound transmission, and provides a unified communication layer for various types of nodes.
-
-The Core itself does not directly handle hardware or OS interactions. Instead, it is designed to be wrapped by platform-specific implementations, including:
-
-* **ESP32 LilyGO LoRa nodes**
-* **Linux Command-line Interface (`viatext-cli`)**
-* **Linux Daemon Process** (for IoT applications)
-* **Station Program** (interactive, chat-like terminal interface)
-
-Each implementation leverages the Core to achieve standardized logging, message queuing, and timing logic.
-
-> **IMPORTANT:** The Core must be written in simple, standard C++ compatible with any appropriate system: Linux, Arduino, etc.
-
----
-
-## Usage Flow
-
-A typical ViaText user scenario is as follows:
-
-* A user on a Linux-based system interacts with ViaText through either the `viatext-cli` or the interactive Station program.
-* The user prepares a message addressed to another user or node. Users have short, human-readable IDs (e.g., radio-style IDs).
-* The message is initially sent from the user's ID to a connected LoRa node ID (e.g., `"Node1"`). This first-hop transmission typically occurs via serial (USB).
-* The LoRa node then broadcasts the message wirelessly. Nearby LoRa nodes receive this broadcast and determine if they are the intended recipient:
-
-  * If the node **is** the recipient, it passes the message to its internal Core, logging and processing it.
-  * If the node is **not** the intended recipient, it conditionally rebroadcasts the message outward to other nodes, following ViaText's mesh rules (such as hop limits or route metadata, or other factors).
-
-Nodes in the mesh can also be "internal nodes," meaning they run directly on Linux systems connected via serial or other local interfaces. These internal nodes can represent human users or IoT endpoints.
-
-All node types, regardless of hardware or operating context, utilize the same Core logic. This provides uniform functionality for logging, timestamp management, and message handling throughout the entire ViaText ecosystem.
-
----
-
-## Core API Methods
-
-The Core exposes a simple, consistent API to node implementations:
-
-* **`add_message(message)`**
-  Adds an inbound message to the internal queue. Standard LoRa messages consist of 1:  message id, 2: to id, 3: from id, 4: message. It can also consist of other directives.
-
-* **`tick(timestamp)`**
-  Advances internal timing logic and triggers scheduled processing, including retries, cleanup, and message expiration checks.
-
-* **`get_message()`**
-  Retrieves the next outbound message for sending. If no message is available, returns an appropriate indicator (e.g., `null` or empty).
-
-* **Other functions**
-  Additional functions can be added, but these three (`add_message`, `tick`, and `get_message`) must handle all activity in this specific order.
-
-Implementations wrapping the Core must regularly call `tick(timestamp)` to maintain proper timing and internal state.
-
-### Internal variables:
-
-- node_id (string)
-- tick_count (how many ticks have passed)
-- uptime (always in milliseconds)
-- last_timestamp (always in milliseconds)
-- inbox (list-like) (populated by add_message)
-- outbox (list-like) (populated get_message)
-- received_message_ids (list of message ids, avoid duplicates)
-
-### Full Process
-
 ## Overview
 
-A ViaText node—whether LoRa, Linux (CLI, station, or daemon)—receives its initial input via whatever interface it is listening through. Each individual node, depending on its role, will add protocol-specific directives to the incoming message. For a LoRa node, it attaches packet info to the message in the form of command-line arguments, which are then parsed and processed by the core logic.
+ViaText Core is the message engine used by all ViaText nodes.  
+It provides a uniform, transport-agnostic way to handle inbound and outbound messages — whether those bytes arrive from LoRa radios, a serial port, or a Linux CLI tool.
+
+The Core:
+
+- Stores received messages in an **inbox** for processing.
+- Manages an **outbox** for outbound delivery.
+- Tracks timing, retries, and expiration.
+- Keeps duplicate protection via recent message ID history.
+
+It does **not** talk directly to radios, sockets, or filesystems.  
+Instead, it is wrapped by platform-specific programs, such as:
+
+- ESP32 LoRa Nodes (e.g., LilyGO LoRa32)
+- Linux CLI tool (`viatext-cli`)
+- Linux Station Program (interactive shell)
+- Daemon services for IoT or always-on systems
+
+All of these wrappers feed the same core logic, ensuring identical behavior no matter where it runs.
 
 ---
 
-## LoRa Packet Reception Example
+## How It Works
 
-### Initial Incoming Message
+### Ingress-Agnostic Design
 
-Example received payload:
+Wrappers take care of receiving raw input and turning it into a **Package**:
 
-```
-0x4F2B000131~shrek~donkey~Shut Up
-```
+- `payload`: up to 255 bytes of in-system text.
+- `args`: metadata as fixed-capacity key/value pairs (e.g., `-rssi 92`, `-sf 7`, `-m`).
 
-### Attaching LoRa Metadata
+Keys are preserved exactly as given. Values may be empty for flags.  
+No heap allocations — everything is stored in fixed-size ETL containers.
 
-Since this is a LoRa node, it attaches packet info as arguments:
-
-```
--m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up
-```
-
-This Linux-style command (recognized internally in the core) contains all relevant radio metadata and message payload info.
+The Core works only with `Package` objects. It does not parse raw strings.
 
 ---
 
-## Command-Line Arguments Reference
+### Typical Flow
 
-Below is a breakdown of the command-line arguments used by the system:
+1. **Wrapper receives data**  
+   From LoRa, serial, stdin, etc.
 
-| Argument        | Description                                                                                  |
-|-----------------|----------------------------------------------------------------------------------------------|
-| `-m`            | **Message/Operation Flag**: Identifier that signals a new message or specific operation.     |
-| `-rssi [value]` | **Received Signal Strength Indicator**: Signal power in dBm. Closer to 0 = stronger signal.  |
-| `-snr [value]`  | **Signal-to-Noise Ratio**: Strength relative to background noise. Positive is better.        |
-| `-sf [value]`   | **Spreading Factor**: Value 7–12; higher = longer range, lower data rate.                    |
-| `-bw [value]`   | **Bandwidth**: Frequency range in kHz (commonly 125, 250, 500).                             |
-| `-cr [value]`   | **Coding Rate**: Forward error correction rate. E.g., `4/5`, `4/6`, `4/7`, `4/8`.           |
-| `-data_length [value]` | **Data Length**: Payload size in bytes.                                                |
-| `-data [value]` | **Data Payload**: The actual message or content transmitted.                                 |
+2. **Wrapper parses metadata**  
+   Populates a `Package` with `payload` + `args`.
 
----
-
-## Message Submission to Core
-
-After assigning all relevant info, the message is submitted to the core using:
-
-```
-add_message("-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up")
-```
-
-Submission can occur once or for multiple messages at a time.
-
----
-
-## Message Processing Cycle
-
-Immediately after message submission, or after multiple messages have been submitted, the system begins processing:
-
-### 1. Tick Function
-
-The tick function is called with the current `millis` value:
-
-```
-tick(millis)
-```
-
-This updates all time and tick information in the system. Every time `tick(millis)` is called, **one message is processed** (first-in, first-out).
-
-### 2. Process Function
-
-After tick, the main process loop runs:
-
-```
-process()
-```
-
-This is the main decision thread.
-
----
-
-## Argument Parsing and Message Object Creation
-
-1. **Argument Parsing:**
-   
-   The message string is parsed using an argument parser:
-   
+3. **Wrapper calls**  
    ```cpp
-   args = ArgParser("-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up")
+   core.add_message(pkg);
    ```
-   
-   The ArgParser class returns a list of argument `key -> value` pairs for internal use.
 
-2. **Main Message Handling:**
-
-   A series of easily modifiable if statements run in priority: 
-
-   if(has_arg("-m")):
-       process_message(args);
-
-   if(has_arg("-p")):
-       respond_to_ping(args)
-
-   ...and so forth...there can be many of these. Since it is the main switch track, dozens or hundreds can exist, but for generic tasks for max usability. 
-
-   This is where the system shines, because these can be LoRa or Linux specific operations that do useful things, in messaging, IoT, Logging, etc. 
-
-   Continuing...
-   
-   If the argument `-m` exists, it is a basic message. The message data is retrieved via the `-data` argument:
-   
-   ```
-   0x4F2B000131~shrek~donkey~Shut Up
-   ```
-   
-   A Message object is created:
-   
+4. **Core processes on tick**  
    ```cpp
-   message = Message("0x4F2B000131~shrek~donkey~Shut Up")
+   core.tick(millis);
+   ```
+
+5. **Wrapper fetches next outbound**  
+   ```cpp
+   if (core.get_message(pkg)) { send(pkg); }
    ```
 
 ---
 
-## Message Object Structure
+### Core API
 
-The Message object extracts and contains all relevant information from the raw message string.
+- **`add_message(Package)`**  
+  Enqueues a new message for processing.
 
-### MessageID Struct
+- **`tick(timestamp_ms)`**  
+  Advances internal timers and processes one queued message per call.
 
-- `sequence`  – The sequence ID of the message set
-- `part`      – Which message part in a series
-- `total`     – Total number of message parts in the series
-- `hops`      – Remaining hops allowed
-- `flags`     – Flags (e.g., request acknowledgement, acknowledged, encrypted)
+- **`get_message(Package&)`**  
+  Retrieves the next outbound message, FIFO order.
 
-### Message Fields
-
-- `from`  – Who sent the message
-- `to`    – Who is the intended recipient
-- `data`  – The message payload/content
-
-The message object holds lots of information for decision making. 
-
-With args and message parsed, we can verify if we are the intended recipient by comparing node_id to message id, using 
-
-```
-bool addressed_to_here(to)
-
-```
-
-if it is addressed to this node, we combine it with a recieved argument -r, and other arguments pertaining:
-
-```
-recieved = '-r -from <from> -data "0x4F2B000131~shrek~donkey~Shut Up'
-```
-
-It will also check the message_id struct to see:
-
-Is it encrypted? (not yet implemented)
-
-Does it require acknowledgment? Then set up the ack message. (not yet implemented)
-
-If requires acknowledgment
-
-and then:
-
-```
-stash_to_outbox(recieved)
-stash_to_outbox(ack) (not yet implemented)
-```
-
-When the wrapper calls 
-
-```
-get_message()
-```
-
-It will get first in / first out messages, which it will respond to according to it's own manner. For example, a LoRa might save the message to history for viewing later. 
-
-The main pattern is this:
-
-Text IN, Text OUT. 
-
-How the wrappers use the processed information will differ in each case. 
-
-### Internal methods / functions:
-
-* **`process()`**
-  Called by tick(timestamp). After time and initial calculations are updated, `process` is called. Process administrates the entire process that happens up to logging the next get_message. 
+Wrappers are expected to call `tick()` regularly to keep the system moving.
 
 ---
 
-## Internal Logic, Recap
+### Internal Tracking
 
-### LoRa Message Structure
+The Core keeps:
 
-The format for a LoRa message is as follows:
-
-```
-<message_id>~<from>~<to>~<message>
-```
-
-This structure contains five parts.
-
-For LoRa communication, the packet is assembled with its data and sent to the Core via `add_message(message)`.
-
-Example:
-
-```
--m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12 -data 0x4F2B000131~shrek~donkey~Shut Up
-```
-
-This example shows the message with purposeful data.
-
-For internal messaging, the system must allow other message types and metadata.
-
-### Arbitrary Command System
-
-ViaText uses a Linux-like command system so Linux users, processes, and hardware can agnostically interact with the engine. **In essence, it behaves somewhat like a standard-in/standard-out machine.**
-
-Arbitrary data can be sent within messages. If the Core doesn't recognize a specific command or data structure, it will drop the message. Recognized commands trigger the appropriate internal actions.
-
-## Connected Modules
-
-### Parser Class
-
-The **Parser class** handles all message and command parsing within the ViaText Core. Its purpose is to offer a **minimal, portable interface** for interpreting commands and message arguments across all node types.
-
-> **Why not use CLI11, getopt, or standard argument parsers?**  
-> Because **ViaText Core must compile cleanly on microcontrollers** like ESP32 and ATmega, without STL-heavy or heap-allocating dependencies. A complex parser would break cross-platform compatibility and violate our core principles: simplicity, portability, and autonomy.
+- node_id – this node’s callsign/identifier.
+- tick_count – how many ticks have passed.
+- uptime – milliseconds since start.
+- last_timestamp – last tick timestamp.
+- inbox – FIFO queue for inbound work.
+- outbox – FIFO queue for outbound work.
+- recent_ids – short history of MessageIDs to avoid duplicates.
 
 ---
 
-#### Command Format Rule
+## Example: LoRa Ingress
 
-All arguments must follow a strict **`-key [value]`** structure:
-
-- A **key** is always prefixed by a single dash (`-`)
-- A **value** is optional
-- Keys with **no value** are treated as **flags**
-- Order matters: keys must precede their value
-
----
-
-#### Design Rationale
-
-This command structure ensures:
-
-- **Maximum compatibility** across all platforms (Linux, ESP32, Arduino, etc.)
-- **Human readability** for CLI and serial-based interaction
-- **Deterministic parsing**, minimizing bugs from ambiguous or complex formats
-- **No external dependencies**, enabling full offline operation and microcontroller use
-
----
-
-This format forms the foundation for all internal command and message control inside the ViaText ecosystem — whether used in serial interfaces, LoRa payloads, or stdin-like Linux daemons.
-
-The parser class is also resonsible for converting a message delimited by "~" into an array of appropriate size (note, not limited to size 5, in case other values must be appended).
-
-### Message Class
-
-Creates a message object from a standard 5 part message string:
-
-- message_id
-- sequence number (see ViaText Message ID Format)
-- part (see ViaText Message ID Format)
-- max parts
-- hops
-- encrypted
-- acknowledge
-- <yet to determine>
-- <yet to determine>
-- from
-- to
-- message
-- <other relevant data>
-- <other relevant data>
-
-Setters and getters for all variables. Useful for when iterating through messages. 
-
-Uses the parser class to retrieve the ordered data. 
-
-## ViaText Message ID Format
-
-ViaText uses a **compact 5-byte message header**, combining a 32-bit message ID with a shared 8-bit field for hops and flags. This structure supports message fragmentation, delivery state, and routing control in a tight, platform-agnostic format optimized for constrained networks like LoRa.
-
----
-
-# ViaText MessageID Format (5-Byte Header)
-
-The `MessageID` struct is the compact 5-byte message header used in the ViaText protocol for all routing, delivery, and fragmentation operations.
-
-## Overview
-
-Each ViaText message begins with a fixed-length, binary header with the following layout:
-
-| Field        | Bits | Bytes | Description                              |
-|--------------|------|-------|------------------------------------------|
-| Sequence     | 16   | 2     | Message-wide unique ID                   |
-| Part Number  | 8    | 1     | Which fragment this is (0–255)           |
-| Total Parts  | 8    | 1     | Total number of fragments (1–255)        |
-| Hops         | 4    | —     | Hop count for TTL-style rebroadcast      |
-| Flags        | 4    | —     | Delivery status, ACK, encryption, etc.   |
-
-## Byte Layout
-
-Packed into 5 bytes:
-
-- **Bytes 0–1**: 16-bit sequence number (big-endian)
-- **Byte 2**: Fragment index (`part`)
-- **Byte 3**: Total number of fragments (`total`)
-- **Byte 4**: High 4 bits = `hops` (0–15), low 4 bits = `flags` (bitmask)
-
+**Raw payload from radio:**
 ```
-[ Sequence (16 bits) ][ Part (8 bits) ][ Total (8 bits) ][ Hops (4 bits) ][ Flags (4 bits) ]
-         0xFFFF             0xFF             0xFF           0bHHHH            0bFFFF
+0x4F2B000131~SHREK~DONKEY~Shut Up
 ```
 
-## Example
-
-A raw message ID encoded as:
-
+**Metadata from wrapper, generally:**
 ```
-[0x00, 0x1C, 0x05, 0x07, 0xAC]
+-m -rssi 92 -snr 4.5 -sf 7 -bw 125 -cr 4/5 -data_length 12
 ```
+(Will often be found in variables such as packet, not a string like this. 
+But each node type will handle arguments it's own way.)
 
-Would be decoded as:
+**Wrapper produces:**
+```cpp
+viatext::Package p;
+p.payload = "0x4F2B000131~SHREK~DONKEY~Shut Up";
+p.args.set_flag("-m");
+p.args.set("-rssi", "92");
+p.args.set("-snr", "4.5");
+p.args.set("-sf",  "7");
+p.args.set("-bw",  "125");
+p.args.set("-cr",  "4/5");
+p.args.set("-data_length", "12");
 
-- `Sequence = 0x001C` → 28
-- `Part = 0x05` → 5
-- `Total = 0x07` → 7 fragments total
-- `Hops = 0xA` → 10 hops
-- `Flags = 0xC` → 0b1100 (ACK + Encrypted)
-
-## Flags Definition
-
-Flags are encoded in the lower 4 bits of the final byte.
-
-| Bit | Flag Name            | Meaning                               |
-|-----|----------------------|----------------------------------------|
-| 0   | Request ACK (0x1)    | Sender requests acknowledgment         |
-| 1   | ACK Reply (0x2)      | This message is an acknowledgment      |
-| 2   | Encrypted (0x4)      | Payload is encrypted                   |
-| 3   | Reserved (0x8)       | Reserved for future use                |
-
-## Why It Matters
-
-- **Compact**: 5 bytes total — fits well in LoRa, serial, and sneakernet payloads.
-- **Fragmentation-ready**: Supports split delivery and reassembly.
-- **Retry-safe**: Detects duplicates, ACKs, and replayed packets.
-- **Routing-aware**: TTL-style hop tracking in 4 bits.
-- **Encryption-aware**: Bit-flagged encrypted payloads.
-
----
-
-
-
-## ViaText User ID Format
-
-### ViaText Callsign Rules (Compact, Radio-Inspired)
-
-ViaText nodes use **compact callsigns** to identify individual devices in a mesh. These are short, human-readable strings that fit cleanly into LoRa packets without bloating payloads.
-
----
-
-### Allowed Characters
-
-- **A–Z** (uppercase only)
-- **0–9**
-- **Hyphen (-)**
-- **Underscore (_)**
-
-> Total charset size: 38 characters
-
----
-
-### Length Constraints
-
-- **Minimum:** 1 character
-- **Maximum:** 6 characters
-- Shorter callsigns are valid and encouraged for symbolic or role-based nodes (e.g. `RX1`, `Z_3`, `TX-2`)
-
----
-
-### Restrictions
-
-- Must **start and end** with an alphanumeric character (A–Z or 0–9)
-- **No consecutive symbols**: `--`, `__`, `-_`, `_1-`, etc.
-- **No lowercase** letters (input should be normalized to uppercase)
-
----
-
-### Valid Examples
-
-| Callsign | Notes                   |
-|----------|-------------------------|
-| `N0D3A1` | Ham-style call          |
-| `ALP_7`  | Underscore as separator |
-| `B-2`    | Short, symbolic         |
-| `Z99X`   | High entropy, short     |
-| `T1_MK`  | Compact and readable    |
-
----
-
-### Invalid Examples
-
-| Callsign  | Reason                           |
-|-----------|----------------------------------|
-| `-NODE1`  | Starts with symbol               |
-| `NODE--5` | Consecutive hyphens              |
-| `node99`  | Lowercase (must normalize)       |
-| `R@DIO5`  | Invalid symbol `@`               |
-| `LONGNAME`| More than 6 characters           |
-
----
-
-### Address Space
-
-With 38 valid characters and up to 6-character callsigns:
-
-```
-38^6 = 3,010,936,384 unique IDs
+core.add_message(p);
 ```
 
-That’s over **3 billion unique callsigns**, each using only **6 ASCII bytes** in the packet.
+---
 
-Ideal for compact, resilient identity encoding in low-bandwidth environments like LoRa.
+## Message and MessageID
+
+The `Message` object can be built from a `Package.payload` when the core needs to interpret the ViaText frame.
+
+### MessageID (5 bytes)
+```
+[ Sequence (16) ][ Part (8) ][ Total (8) ][ Hops (4) | Flags (4) ]
+```
+- Compact: always 5 bytes.
+- Supports fragmentation, hop limits, ACK/encryption flags.
+- Duplicate detection via sequence/part.
+
+---
+
+## ViaText Callsigns
+
+- Charset: A–Z, 0–9, `-`, `_`
+- Length: 1–6 characters
+- Must start/end with alphanumeric.
+- No consecutive symbols.
+- Example: `N0D3A1`, `B-2`, `RX_1`
+
+---
+
+## Core Philosophy
+
+### Simplicity
+- Everything is human-readable where possible.
+- All state can be inspected with standard Linux tools.
+- One person should be able to understand and modify the code without vendor docs.
+
+### Portability
+- Runs on ESP32, Raspberry Pi, Linux desktops/servers.
+- No GUI required — terminal and serial friendly.
+- Minimal dependencies; fixed-size storage for MCU safety.
+
+### Autonomy
+- No phone or internet required.
+- Operates in mesh or stand-alone.
+- Messages carry their own minimal headers; no schema servers.
+
+---
+
+## Feature Tracker
+
+- [x] Fixed-capacity argument storage (`ArgList`)
+- [x] Text payload (`Text255`)
+- [x] Core FIFO inbox/outbox
+- [x] MessageID parsing and packing
+- [ ] ACK handling
+- [ ] Encryption layer
+- [ ] Store-and-forward Post Office mode
+- [ ] RPS/LPS time/orientation sync

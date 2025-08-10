@@ -1,22 +1,24 @@
-/**
- * @file message_id.cpp
- * @brief Implementation of the MessageID struct used in ViaText headers.
- *
- * This file provides the full implementation for the MessageID class, which represents
- * a compact 5-byte routing and control header used in the ViaText protocol.
- *
- * Implemented methods include:
- * - Constructors (default, from buffer, hex string, raw fields)
- * - Packing and unpacking to/from raw byte arrays
- * - Human-readable string conversion (embedded-safe)
- * - Bitwise accessors for ACK/encryption flags
- * - Static helpers for hex string parsing
- *
- * @note All methods are safe for cross-platform use (Linux, Arduino, etc.) and avoid heap allocation.
- *
- * @author Leo
- * @author ChatGPT
- */
+// -----------------------------------------------------------------------------
+// @file message_id.cpp
+// @brief Implementation of the MessageID struct used in ViaText headers.
+//
+// This file provides the full implementation for the MessageID class, which
+// represents a compact 5-byte routing and control header used in the ViaText
+// protocol.
+//
+// Implemented methods include:
+// - Constructors (default, from buffer, hex string, raw fields)
+// - Packing and unpacking to/from raw byte arrays
+// - Human-readable string conversion (embedded-safe)
+// - Bitwise accessors for ACK/encryption flags
+// - Static helpers for hex string parsing
+//
+// @note All methods are safe for cross-platform use (Linux, Arduino, etc.)
+//       and avoid heap allocation.
+//
+// @author Leo
+// @author ChatGPT
+// -----------------------------------------------------------------------------
 #include "viatext/message_id.hpp"
 
 namespace viatext {
