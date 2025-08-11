@@ -478,5 +478,26 @@ etl::string<16> Core::to_string_number(uint32_t n) {
   return s;
 }
 
+/**
+ * @brief Create a new message with a unique sequence number.
+ */
+Message Core::create_new_message() {
+  // Allocate a sequence that's not currently in the recent ring.
+  // Bound the attempts to avoid any theoretical pathological case.
+  uint16_t seq = 0;
+  bool ok = false;
+
+  for (size_t i = 0; i < RECENT_SEQ_CAP + 1; ++i) {
+    seq = seq_.allocate();
+    if (!contains_sequence(seq)) { ok = true; break; }
+  }
+
+  // If all attempts collided (extremely unlikely), we still proceed with the last seq.
+  // The message will be valid; worst case it might be dropped by dedupe if reused too soon.
+  (void)ok;
+
+  return Message::get_new_message_template(seq);
+}
+
 
 } // namespace viatext

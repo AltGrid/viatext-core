@@ -1,4 +1,5 @@
 /**
+ * @page vt-core ViaText Core
  * @file core.hpp
  * @brief ViaText Core — the minimal node brain (tick -> process loop, sane I/O, basic handlers).
  *
@@ -766,7 +767,66 @@ private:
    * @return ETL string containing the decimal representation.
    */
   static etl::string<16> to_string_number(uint32_t n);
+  
+  /**
+   * @brief Allocate a fresh sequence and return a blank, valid Message template.
+   *
+   * @details
+   * - Safely increments the internal sequence allocator.
+   * - Skips any sequence still present in the recent-sequence ring to avoid
+   *   immediate dedupe collisions on wraparound.
+   * - Uses Message::get_new_message_template(seq) so the payload defaults to
+   *   "<hex10>~~~" and status_=Ok.
+   *
+   * @return Message
+   *   A blank message (empty from/to/body) with a valid, unused MessageID.
+   */
+  Message create_new_message();
 
+  
+  private:
+    /**
+     * @class SequenceAllocator
+     * @brief Private helper for managing ViaText message sequence numbers.
+     *
+     * @details
+     * The `SequenceAllocator` is an internal, nested utility class used by `Core`
+     * to issue new outbound message sequence numbers and track the last inbound
+     * sequence number processed.
+     *
+     * This allocator is the **source of truth** for all new outbound sequences:
+     * - Outbound allocations are monotonic `uint16_t` values that wrap naturally
+     *   at 65535 - 0.
+     * - All fragments of a single logical message share the same sequence number.
+     * - Retries and acknowledgments reuse the original sequence; no new allocation.
+     *
+     * It also maintains a telemetry value for **last inbound sequence** so that
+     * wrappers, logs, or internal policies can observe the most recent message
+     * processed without affecting allocation state.
+     *
+     * ### Access Control
+     * - Declared inside `Core` under `private:` — completely hidden from external
+     *   code.
+     * - Methods are `public` inside the nested class so that `Core` can call them
+     *   freely.
+     * - Outside code cannot name or construct a `SequenceAllocator` directly.
+     *
+     * ### Typical Usage (inside Core only)
+     * @code
+     * uint16_t seq = seq_.allocate();     // allocate and return new outbound sequence
+     * seq_.set_last_inbound(in_msg.sequence()); // update telemetry after processing inbound
+     * @endcode
+     */
+    class SequenceAllocator {
+      uint16_t next_{0};   /// next sequence to allocate (wraps naturally)
+      uint16_t last_in_{0};/// last inbound sequence seen (telemetry)
+    public:
+      uint16_t allocate() { return ++next_; }            /// increments and returns
+      uint16_t peek() const { return next_; }            /// read without mutating
+      uint16_t last_inbound() const { return last_in_; } /// telemetry
+      void set_last_inbound(uint16_t s) { last_in_ = s; }/// update telemetry
+      void seed(uint16_t s) { next_ = s; }               /// deterministic tests / restore
+    } seq_;
 
 private:
   // ---------- state ----------
@@ -785,6 +845,7 @@ private:
   etl::deque<uint16_t, RECENT_SEQ_CAP> recent_seqs_; ///< Recent message sequence IDs for duplicate suppression.
 
 };
+
 
 } // namespace viatext
 

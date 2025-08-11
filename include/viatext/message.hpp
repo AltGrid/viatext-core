@@ -188,6 +188,50 @@ public:
     return out;
   }
 
+  /**
+   * @brief Factory: create a valid, empty message from an existing MessageID.
+   *
+   * Fields set:
+   *   - id_       = @p id (masked to nibble rules by MessageID ctor)
+   *   - from_/to_/data_ = empty strings
+   *   - pkg_.payload    = "<hex10>~~~"  (minimal valid stamp)
+   *   - status_         = Ok
+   *
+   * This is useful for building a "starter" message that the caller will fill in.
+   */
+  static Message get_new_message_template(const MessageID& id) {
+      Message m;
+      m.id_ = id;
+      m.from_.clear();
+      m.to_.clear();
+      m.data_.clear();
+      // Build minimal payload "<hex10>~~~"
+      m.pkg_.payload.clear();
+      m.pkg_.payload += id.to_hex_string();
+      m.pkg_.payload += '~';
+      m.pkg_.payload += '~';
+      m.pkg_.payload += '~';
+      m.status_ = MessageStatus::Ok;
+      return m;
+  }
+
+  /**
+   * @brief Factory: create a valid, empty message from a numeric sequence.
+   *
+   * Builds a MessageID with sane defaults:
+   *   - sequence = @p seq
+   *   - part     = 0
+   *   - total    = 1
+   *   - hops     = 0
+   *   - flags    = 0
+   *
+   * Payload and fields same as the MessageID overload.
+   */
+  static Message get_new_message_template(uint16_t seq) {
+      MessageID id(seq, /*part*/0, /*total*/1, /*hops*/0, /*flags*/0);
+      return get_new_message_template(id);
+  }
+
 private:
   MessageID  id_{};
   Package    pkg_{};
@@ -312,6 +356,9 @@ private:
 
     return MessageStatus::Ok;
   }
+
+ // --- Add inside class Message public section ---
+ 
 };
 
 } // namespace viatext
