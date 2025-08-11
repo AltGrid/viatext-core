@@ -298,14 +298,24 @@ int main(int argc, char** argv) {
     atomic_write_json(state_file, st);
   }
 
-  // Build Package for core (core-centered args only)
-  Package pkg;
+// Build Package for core (core-centered args only)
+Package pkg;
+
+// Detect creation mode (--new) directly from argv (since it's not a declared CLI11 option)
+bool has_new = false;
+for (int i = 1; i < argc; ++i) {
+  if (std::string(argv[i]) == "--new") { has_new = true; break; }
+}
+
   // Decide payload
   if (!opt_message.empty()) {
+    // User supplied a full stamp; pass it through as-is
     pkg.payload = opt_message.c_str();
-  } else if (!opt_id_hex.empty() || !opt_from.empty() || !opt_to.empty() || !opt_data.empty()) {
-    // Assemble stamp if user provided components. We trust lengths here; Core will validate.
-    // Ensure id is 10 hex (no "0x"). If user gave "0x...", keep as-is; Message can handle.
+  } else if ((!opt_id_hex.empty() || !opt_from.empty() || !opt_to.empty() || !opt_data.empty())
+            && !has_new) {
+    // Assemble stamp from parts ONLY when we're NOT creating a new message
+    // (In creation mode, Core will allocate MessageID and build the stamp.)
+    // NOTE we might have to remove this for safety / future bugs. 
     std::string stamp;
     if (!opt_id_hex.empty()) stamp += opt_id_hex;
     stamp += "~";
@@ -316,15 +326,16 @@ int main(int argc, char** argv) {
     if (!opt_data.empty())   stamp += opt_data;
     pkg.payload = stamp.c_str();
   } else {
-    // No payload is fine for directives like -p / --set-id that use args or body
+    // Empty payload is correct for directives (e.g., -p, --set-id) and for --new creation
     pkg.payload.clear();
   }
+
 
   // Pass-through of core-centered args from argv (preserve exact keys & values).
   // Known CLI-centered keys to strip:
   const std::set<std::string> CLI_ONLY = {
     "--print","--format","--no-color","--state-dir","--create-id","--tick-ms",
-    "--message","--id","--from","--to","--data"
+    "--message","--id","--from"
   };
 
   // Map convenience forms to core reality

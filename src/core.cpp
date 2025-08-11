@@ -102,13 +102,20 @@ void Core::process_one(uint32_t now_ms) {
 
   // PRE: check if there's anything to process
   if (inbox_.empty()) return;
-
+  
   Package in_pkg = inbox_.front();     // PRE: get oldest queued package
   inbox_.pop_front();                  // remove from inbox
 
   // PRE: construct a Message object from the package
   // DROP if invalid — silent fail for MVP
   Message msg(in_pkg);
+
+  // if we are creating a new message, branch off from here because data will be propogated
+  // in correctly from a raw user message.
+  if(msg.flag("-m") && msg.flag("--new")){ 
+    dispatch(msg);
+  }
+
   if (!msg.is_valid()) {
     return;
   }
@@ -155,6 +162,12 @@ void Core::process_one(uint32_t now_ms) {
 // -----------------------------------------------------------------------------
 void Core::dispatch(const Message& msg) {
   // NOTE: Order is explicit; only first matching branch runs in MVP.
+
+  if (msg.flag("-m") && msg.flag("--new")){
+     handle_new_message(msg);
+     return;
+     
+  }
 
   // DISPATCH: standard message payload delivery (highest precedence)
   if (msg.flag("-m")) {          // standard message
@@ -212,6 +225,56 @@ void Core::handle_message(const Message& msg) {
   }
 }
 
+void Core::handle_new_message(const Message& msg) {
+    // REQUIRED: --to
+    const ValStr* tov = msg.get_arg("--to");
+    if (!tov || tov->empty()) return;             // no destination → bail
+    const char* to = tov->c_str();
+
+    // FROM = this node (no --from)
+    const char* from = node_id_.c_str();
+
+    // OPTIONAL: --data (empty allowed)
+    const char* data = "";
+    if (const ValStr* dv = msg.get_arg("--data")) data = dv->c_str();
+
+    // Fresh seq + header template
+    Message new_msg = create_new_message();
+
+    // Fill stamp fields
+    new_msg.set_from(from);
+    new_msg.set_to(to);
+    new_msg.set_text(data);
+
+    // Assemble payload so package().payload matches fields
+    if (new_msg.to_payload_stamp(new_msg.package().payload) != MessageStatus::Ok) {
+        return; // overflow guard; shouldn’t happen with 255 cap, but be defensive
+    }
+
+    // Copy args from incoming, using ArgList index access; drop triggers we don’t want
+    const ArgList& in_args = msg.package().args;
+    for (size_t i = 0; i < in_args.size(); ++i) {
+        const ArgKV& kv = in_args[i];
+
+        // Strip creation trigger and any user-supplied --from (we set from=node_id_)
+        if (kv.k == "--new") continue;
+
+        if (kv.v.empty()) {
+            new_msg.set_flag(kv.k.c_str());       // presence-only flag
+        } else {
+            new_msg.set_arg(kv.k.c_str(), kv.v.c_str());
+        }
+    }
+
+    // Ensure message directive is present
+    new_msg.set_flag("-m");
+
+    // Keep explicit routing keys consistent (optional but clear)
+    new_msg.set_arg("--to",   to);
+    new_msg.set_arg("--from", from);
+
+    if (!outbox_.full()) outbox_.push_back(new_msg.package());
+}
 
 // -----------------------------------------------------------------------------
 // handle_ping() — Respond to a "-p" ping with a "-pong" package.

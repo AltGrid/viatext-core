@@ -627,6 +627,12 @@ private:
   void handle_message(const Message& msg);
 
   /**
+   * @brief Handle new message creation requests.
+   * @todo REMINDER CHATGPT MUST DOCUMENT
+   */
+  void handle_new_message(const Message& msg);
+
+  /**
    * @brief Handle inbound ping requests.
    *
    * @details
@@ -783,6 +789,24 @@ private:
    */
   Message create_new_message();
 
+  /**
+   * @brief Create a new, valid message with fresh sequence and given stamp fields.
+   *
+   * Policy:
+   *  - sequence: allocated here (avoids recent-seq collisions)
+   *  - part/total: 0/1 (unfragmented)
+   *  - hops/flags: 0
+   *  - from:  if nullptr, defaults to this node's ID
+   *  - to:    must be non-null/non-empty (drop at call site if missing)
+   *  - data:  may be nullptr (treated as empty)
+   *
+   * Side effects:
+   *  - Builds payload so `package().payload` matches the header/body (`<hex10>~from~to~data`).
+   *  - Does NOT set any args/flags; caller can set `-m`, `-ack`, etc. afterward.
+   */
+  Message create_new_message(const char* to,
+                            const char* data,
+                            const char* from = nullptr);
   
   private:
     /**

@@ -3,7 +3,7 @@
  * @file message_id.hpp
  * @brief ViaText MessageID — Compact 5-byte routing header for resilient mesh delivery.
  *
- * This header defines the `MessageID` struct, which encodes the standardized 6-byte message header
+ * This header defines the `MessageID` struct, which encodes the standardized 5-byte message header
  * used in the ViaText protocol. Each message starts with this compact header, allowing for efficient
  * routing, fragmentation, and delivery control over constrained transports like LoRa, serial links,
  * and sneakernet storage.

@@ -157,6 +157,11 @@ public:
   const Package& package() const { return pkg_; }
   Package&       package()       { return pkg_; }
 
+  void set_package(const Package& pkg) {
+    pkg_ = pkg;
+    status_ = parse_from_payload_stamp();
+  } 
+
   // -------- Assembly helpers --------
 
   /**
