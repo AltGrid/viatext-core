@@ -3,7 +3,8 @@
 │   ├── BLUEPRINTS.md
 │   └── README.md
 ├── cli
-│   └── main.cpp
+│   ├── main.cpp
+│   └── README.md
 ├── include
 │   └── viatext
 │       ├── core.hpp
@@ -33,7 +34,6 @@
 │   │   └── main.cpp
 │   ├── test_message_id.cpp
 │   └── test_package_args.cpp
-├── test.txt
 ├── third_party
 │   ├── CLI
 │   │   └── CLI11.hpp

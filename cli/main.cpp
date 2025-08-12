@@ -40,6 +40,11 @@
 #include "viatext/message.hpp"
 #include "viatext/message_id.hpp"
 
+
+// Transport helpers
+#include "viatext/transport/transport_linux_serial.hpp"
+using namespace viatext::transport;
+
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 using namespace viatext;
@@ -54,6 +59,54 @@ struct Ansi {
   std::string dim (const std::string& s) const { return enabled ? "\033[2m"+s+"\033[0m" : s; }
   std::string red (const std::string& s) const { return enabled ? "\033[31m"+s+"\033[0m" : s; }
 };
+
+static int send_serial(const std::string& dev, int baud, const std::string& text) {
+  SerialConfig sc;
+  sc.path = dev;
+  sc.baud = baud;
+
+  LinuxSerial port;
+  if (!port.begin(sc)) {
+    fprintf(stderr, "ERROR: open %s @ %d failed\n", dev.c_str(), baud);
+    return 1;
+  }
+
+  // Ensure newline so it's easy to see in monitors
+  std::string payload = text;
+  if (payload.empty() || payload.back() != '\n') payload.push_back('\n');
+
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(payload.data());
+  std::size_t    n = payload.size();
+
+  // Tiny non-blocking retry loop (handles EAGAIN/Busy cleanly)
+  std::size_t sent = 0;
+  const int max_spins = 2000; // ~200ms worst-case if we sleep 100us
+  int spins = 0;
+
+  while (sent < n && spins++ < max_spins) {
+    auto r = port.send(p + sent, n - sent);
+    if (r == TxResult::Ok) {
+      // We asked to write all bytes; kernel may buffer partially.
+      // Our LinuxSerial::send writes once; if you want exact count,
+      // you can make send() return bytes. For now, assume Ok == accepted.
+      sent = n; // good enough for a simple send
+      break;
+    } else if (r == TxResult::Busy) {
+      // Back off a hair and try again
+      usleep(100);
+    } else {
+      fprintf(stderr, "ERROR: write failed\n");
+      return 2;
+    }
+  }
+
+  if (sent < n) {
+    fprintf(stderr, "ERROR: timed out before sending all bytes\n");
+    return 3;
+  }
+
+  return 0;
+}
 
 // Callsign rules: A–Z 0–9 - _ ; 1..6; must start/end alnum; no consecutive symbols.
 static bool valid_callsign(const std::string& id) {
@@ -179,6 +232,10 @@ static void print_args_pretty(const ArgList& args, const Ansi& ansi) {
 // ---------- main ----------
 
 int main(int argc, char** argv) {
+
+  std::string opt_serial; // e.g., /dev/serial/by-id/usb-...
+  int opt_baud = 115200;
+
   // CLI-centered options
   bool opt_print = false;
   std::string opt_format = "pretty"; // pretty|json|raw
@@ -211,6 +268,9 @@ int main(int argc, char** argv) {
   app.add_option("--from", opt_from, "Sender callsign");
   app.add_option("--to", opt_to, "Recipient callsign");
   app.add_option("--data", opt_data, "Body text");
+
+  app.add_option("--serial", opt_serial, "Serial device path to send payloads");
+  app.add_option("--baud",   opt_baud,   "Baud rate")->capture_default_str();
 
   try {
     app.parse(argc, argv);
@@ -415,7 +475,12 @@ for (int i = 1; i < argc; ++i) {
   std::vector<Package> outs;
   Package out;
   while (core.get_message(out)) {
-    outs.push_back(out);
+      outs.push_back(out);
+
+      if (!opt_serial.empty()) {
+          int rc = send_serial(opt_serial, opt_baud, out.payload.c_str()); // send just this payload
+          if (rc != 0) return rc; // fail fast if write fails
+      }
   }
 
   // OUT: print
