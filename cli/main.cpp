@@ -470,14 +470,16 @@ for (int i = 1; i < argc; ++i) {
   core.add_message(pkg);
   uint32_t tnow = opt_tick_set ? opt_tick_ms : now_ms_steady32();
   core.tick(tnow);
-
   // Collect outputs
   std::vector<Package> outs;
   Package out;
+  std::cerr << "Outbox size: " << outs.size() << "\n";
+
   while (core.get_message(out)) {
       outs.push_back(out);
 
       if (!opt_serial.empty()) {
+          // SEND TO SERIAL ###
           int rc = send_serial(opt_serial, opt_baud, out.payload.c_str()); // send just this payload
           if (rc != 0) return rc; // fail fast if write fails
       }
