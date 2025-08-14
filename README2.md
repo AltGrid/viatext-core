@@ -10,6 +10,7 @@ It’s written in **pure C++**, with no runtime bloat, no external dependencies,
 
 This is the component that speaks the protocol, builds and parses messages, handles stamps, and maintains consistent internal logic — no matter what physical layer is involved.
 
+
 ---
 
 ## 🔗 Project Umbrella
