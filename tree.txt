@@ -1,0 +1,14 @@
+.
+├── include
+│   └── slip.hpp
+├── LICENSE
+├── README.md
+├── src
+│   └── main.cpp
+├── third_party
+│   └── CLI
+│       └── CLI11.hpp
+├── tree.txt
+└── viatext.png
+
+5 directories, 7 files
