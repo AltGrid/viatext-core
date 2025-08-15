@@ -18,6 +18,8 @@
 #   make run-set-id ID=vt-01
 #   make run-scan        # does --scan (and accepts ALIASES=1 to add links)
 #   make run-node ID=vt-01 ARGS="--get-id"
+#   make run-get-all     # queries all settings from target node
+#   make run-set-channel CH=915000000   # sets operating channel
 #   make clean
 #
 # Note: We link against your host libstdc++ (default). Rebuild on each host.
@@ -62,7 +64,7 @@ LDFLAGS += $(FS_LIB)
 CXXFLAGS += -O2
 
 # --- targets ---
-.PHONY: all debug release clean run dirs run-get-id run-ping run-set-id run-scan run-node
+.PHONY: all debug release clean run dirs run-get-id run-ping run-set-id run-scan run-node run-get-all run-set-channel
 
 all: $(APP)
 
@@ -111,6 +113,14 @@ run-scan: $(APP)
 # Usage: make run-node ID=vt-01 ARGS="--get-id"
 run-node: $(APP)
 	./$(APP) --node $(ID) $(ARGS)
+
+# New helpers for convenience
+run-get-all: $(APP)
+	./$(APP) --node $(ID) --get-all
+
+CH ?= 915000000
+run-set-channel: $(APP)
+	./$(APP) --node $(ID) --set-channel $(CH)
 
 clean:
 	@rm -rf $(OBJ_DIR) $(APP)

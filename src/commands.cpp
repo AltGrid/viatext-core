@@ -1,6 +1,19 @@
 /**
  * @file commands.cpp
+ * @brief Low-level ViaText request builders (host side) + pretty response decode.
+ *
+ * This pairs with commands.hpp and command_dispatch.*:
+ *  - Builders here construct the *inner payload* (verb + TLVs); serial_io wraps it in SLIP.
+ *  - Numeric TLVs are LITTLE-ENDIAN; strings are UTF-8 (max 255 bytes).
+ *  - Legacy verbs (GET_ID/SET_ID/PING) remain for simple flows.
+ *  - Generic verbs (GET_PARAM/SET_PARAM/GET_ALL) support a full parameter model.
+ *
+ * Notes:
+ *  - GET_ALL may yield multiple RESP_OK frames; callers must read until satisfied/timeout.
+ *  - `decode_pretty()` yields a compact, human+machine friendly line; for structured data,
+ *    parse TLVs directly in your caller.
  */
+
 #include "commands.hpp"
 #include <algorithm>
 #include <sstream>
@@ -20,16 +33,19 @@ static inline void add_tlv_bytes(std::vector<uint8_t>& b, uint8_t tag, const uin
     b.push_back(tag); b.push_back(len); if (len) b.insert(b.end(), p, p+len);
 }
 static inline void add_tlv_u8 (std::vector<uint8_t>& b, uint8_t tag, uint8_t v){ uint8_t x[1]={v}; add_tlv_bytes(b,tag,x,1); }
-static inline void add_tlv_i8 (std::vector<uint8_t>& b, uint8_t tag, int8_t  v){ uint8_t x[1]={ (uint8_t)v }; add_tlv_bytes(b,tag,x,1); }
+static inline void add_tlv_i8 (std::vector<uint8_t>& b, uint8_t tag, int8_t  v){ uint8_t x[1]={ static_cast<uint8_t>(v) }; add_tlv_bytes(b,tag,x,1); }
 static inline void add_tlv_u16(std::vector<uint8_t>& b, uint8_t tag, uint16_t v){ uint8_t x[2]={(uint8_t)(v&0xFF),(uint8_t)(v>>8)}; add_tlv_bytes(b,tag,x,2); }
-static inline void add_tlv_i16(std::vector<uint8_t>& b, uint8_t tag, int16_t  v){ uint16_t u=(uint16_t)v; add_tlv_u16(b,tag,u); }
-static inline void add_tlv_u32(std::vector<uint8_t>& b, uint8_t tag, uint32_t v){ uint8_t x[4]={(uint8_t)(v&0xFF),(uint8_t)((v>>8)&0xFF),(uint8_t)((v>>16)&0xFF),(uint8_t)((v>>24)&0xFF)}; add_tlv_bytes(b,tag,x,4); }
+static inline void add_tlv_i16(std::vector<uint8_t>& b, uint8_t tag, int16_t  v){ add_tlv_u16(b,tag, static_cast<uint16_t>(v)); }
+static inline void add_tlv_u32(std::vector<uint8_t>& b, uint8_t tag, uint32_t v){
+    uint8_t x[4]={(uint8_t)(v&0xFF),(uint8_t)((v>>8)&0xFF),(uint8_t)((v>>16)&0xFF),(uint8_t)((v>>24)&0xFF)};
+    add_tlv_bytes(b,tag,x,4);
+}
 static inline void add_tlv_str(std::vector<uint8_t>& b, uint8_t tag, const std::string& s){
-    uint8_t L = (uint8_t)std::min<size_t>(s.size(), 255);
-    add_tlv_bytes(b, tag, (const uint8_t*)s.data(), L);
+    const uint8_t L = static_cast<uint8_t>(std::min<size_t>(s.size(), 255));
+    add_tlv_bytes(b, tag, reinterpret_cast<const uint8_t*>(s.data()), L);
 }
 static inline void add_tlv_get(std::vector<uint8_t>& b, uint8_t tag){ add_tlv_bytes(b, tag, nullptr, 0); } // request tag via GET_PARAM
-static inline void finalize(std::vector<uint8_t>& b){ b[3] = uint8_t(b.size() - 4); }
+static inline void finalize(std::vector<uint8_t>& b){ b[3] = static_cast<uint8_t>(b.size() - 4); }
 
 // ============================================================================
 // Legacy builders (kept so current firmware keeps working)
@@ -202,27 +218,42 @@ struct Tlv { uint8_t tag; std::string val; }; // value is raw bytes; may include
 static std::vector<Tlv> parse_tlvs(const std::vector<uint8_t>& f){
     std::vector<Tlv> tv;
     if (f.size() < 4) return tv;
-    size_t tl = f[3], off=4, end = std::min(f.size(), size_t(4+tl));
+    const size_t tl = f[3];
+    size_t off = 4, end = std::min(f.size(), size_t(4 + tl));
     while (off + 2 <= end){
         uint8_t tag = f[off++], len = f[off++];
         if (off + len > end) break;
-        tv.push_back({tag, std::string((const char*)&f[off], (const char*)&f[off+len])});
+        tv.push_back({tag, std::string(reinterpret_cast<const char*>(&f[off]),
+                                       reinterpret_cast<const char*>(&f[off + len]))});
         off += len;
     }
     return tv;
 }
 
-static inline bool as_u8 (const std::string& s, uint8_t&  out){ if (s.size()!=1) return false; out=(uint8_t)(unsigned char)s[0]; return true; }
-static inline bool as_i8 (const std::string& s, int8_t&   out){ if (s.size()!=1) return false; out=(int8_t)(signed char)s[0]; return true; }
-static inline bool as_u16(const std::string& s, uint16_t& out){ if (s.size()!=2) return false; out=(uint16_t)((unsigned char)s[0] | ((unsigned)s[1]<<8)); return true; }
-static inline bool as_i16(const std::string& s, int16_t&  out){ uint16_t u; if(!as_u16(s,u)) return false; out=(int16_t)u; return true; }
-static inline bool as_u32(const std::string& s, uint32_t& out){ if (s.size()!=4) return false; out=(uint32_t)((unsigned char)s[0] | ((unsigned)s[1]<<8) | ((unsigned)s[2]<<16) | ((unsigned)s[3]<<24)); return true; }
+// Safe byte→int helpers (LE)
+static inline bool as_u8 (const std::string& s, uint8_t&  out){ if (s.size()!=1) return false; out=static_cast<uint8_t>(static_cast<unsigned char>(s[0])); return true; }
+static inline bool as_i8 (const std::string& s, int8_t&   out){ if (s.size()!=1) return false; out=static_cast<int8_t>(static_cast<signed char>(s[0])); return true; }
+static inline bool as_u16(const std::string& s, uint16_t& out){
+    if (s.size()!=2) return false;
+    out = static_cast<uint16_t>( static_cast<uint16_t>(static_cast<uint8_t>(s[0])) |
+                                (static_cast<uint16_t>(static_cast<uint8_t>(s[1])) << 8) );
+    return true;
+}
+static inline bool as_i16(const std::string& s, int16_t&  out){ uint16_t u; if(!as_u16(s,u)) return false; out=static_cast<int16_t>(u); return true; }
+static inline bool as_u32(const std::string& s, uint32_t& out){
+    if (s.size()!=4) return false;
+    out =  static_cast<uint32_t>(static_cast<uint8_t>(s[0])) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(s[1])) << 8) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(s[2])) << 16) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(s[3])) << 24);
+    return true;
+}
 
 std::string decode_pretty(const std::vector<uint8_t>& f){
     std::ostringstream os;
     if (f.size() < 4) { os << "status=error reason=bad_frame"; return os.str(); }
     uint8_t verb  = f[0];
-    uint8_t flags = f[1];
+    // uint8_t flags = f[1]; // reserved
     uint8_t seq   = f[2];
 
     if (verb == RESP_OK)      os << "status=ok";
@@ -264,12 +295,15 @@ std::string decode_pretty(const std::vector<uint8_t>& f){
             case TAG_FREE_FLASH:{ uint32_t v; if (as_u32(t.val,v)) os << " free_flash=" << v; break; }
             case TAG_LOG_COUNT: { uint16_t v; if (as_u16(t.val,v)) os << " log_count=" << v; break; }
 
-            default:
-                // Unknown tag: print raw hex (short)
+            default: {
                 os << " tag" << unsigned(t.tag) << "=0x";
-                for (unsigned char c : t.val) os << std::hex << std::setw(2) << std::setfill('0') << (unsigned)c;
-                os << std::dec;
+                std::ios_base::fmtflags f0 = os.flags();
+                char fill0 = os.fill();
+                for (unsigned char c : t.val)
+                    os << std::hex << std::setw(2) << std::setfill('0') << (unsigned)c;
+                os.flags(f0); os.fill(fill0);
                 break;
+            }
         }
     }
     return os.str();
