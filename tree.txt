@@ -1,0 +1,35 @@
+.
+├── build
+│   ├── command_dispatch.d
+│   ├── command_dispatch.o
+│   ├── commands.d
+│   ├── commands.o
+│   ├── main.d
+│   ├── main.o
+│   ├── node_registry.d
+│   ├── node_registry.o
+│   ├── serial_io.d
+│   └── serial_io.o
+├── include
+│   ├── command_dispatch.hpp
+│   ├── commands.hpp
+│   ├── node_registry.hpp
+│   ├── serial_io.hpp
+│   └── slip.hpp
+├── LICENSE
+├── Makefile
+├── README.md
+├── src
+│   ├── command_dispatch.cpp
+│   ├── commands.cpp
+│   ├── main.cpp
+│   ├── node_registry.cpp
+│   └── serial_io.cpp
+├── third_party
+│   └── CLI
+│       └── CLI11.hpp
+├── tree.txt
+├── viatext-cli
+└── viatext.png
+
+5 directories, 27 files

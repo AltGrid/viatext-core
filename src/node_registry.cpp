@@ -1,3 +1,7 @@
+/**
+ * @file node_registry.cpp
+ */
+
 #include "node_registry.hpp"
 #include "commands.hpp"    // viatext::make_get_id(), viatext::decode_pretty()
 #include "serial_io.hpp"   // viatext::open_serial(), write_frame(), read_frame(), close_serial()

@@ -1,3 +1,6 @@
+/**
+ * @file command_dispatch.cpp
+ */
 #include "command_dispatch.hpp"
 #include "commands.hpp"
 
